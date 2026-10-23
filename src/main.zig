@@ -32,17 +32,26 @@ fn execute(init: std.process.Init) !u8 {
     _ = args.next();
 
     var environment: EnvironmentAdapter = .{ .values = init.environ_map };
-    var prompt = mentohust.config.TerminalPrompt.init(init.io);
+    var prompt = mentohust.terminal.TerminalPrompt.init(init.io);
     var diagnostic: clap.Diagnostic = .{};
-    const action = mentohust.config.parse(
+    const parsed = mentohust.config.parse(
         init.gpa,
         &args,
         environment.environment(),
         prompt.interface(),
         &diagnostic,
-    ) catch |err| {
+    );
+    mentohust.config.clearEnvironmentSecret(init.environ_map, "MENTOHUST_PASSWORD");
+    const action = parsed catch |err| {
+        if (prompt.interruptedSignal()) |signal| {
+            return switch (signal) {
+                .interrupt => 130,
+                .terminate => 143,
+            };
+        }
+        const code = mentohust.config.parseExitCode(err);
         try reportConfigError(init.io, diagnostic, err);
-        return 2;
+        return code;
     };
 
     switch (action) {

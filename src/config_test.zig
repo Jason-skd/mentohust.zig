@@ -220,3 +220,21 @@ test "duration parser validates units and overflow" {
         config.parseDuration("18446744073709551615h"),
     );
 }
+
+test "parse failures remain distinguishable at the exit boundary" {
+    try std.testing.expectEqual(@as(u8, 2), config.parseExitCode(error.InvalidInterface));
+    try std.testing.expectEqual(@as(u8, 5), config.parseExitCode(error.WriteFailed));
+    try std.testing.expectEqual(@as(u8, 6), config.parseExitCode(error.OutOfMemory));
+}
+
+test "environment password is removed after configuration resolution" {
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try environment.put("MENTOHUST_PASSWORD", "secret");
+    try environment.put("MENTOHUST_USERNAME", "alice");
+
+    config.clearEnvironmentSecret(&environment, "MENTOHUST_PASSWORD");
+
+    try std.testing.expect(!environment.contains("MENTOHUST_PASSWORD"));
+    try std.testing.expectEqualStrings("alice", environment.get("MENTOHUST_USERNAME").?);
+}

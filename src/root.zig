@@ -6,6 +6,7 @@ pub const platform = @import("platform.zig");
 pub const config = @import("config.zig");
 pub const lifecycle = @import("lifecycle.zig");
 pub const logging = @import("logging.zig");
+pub const terminal = @import("terminal.zig");
 
 test {
     _ = coordinator;
@@ -13,6 +14,7 @@ test {
     _ = config;
     _ = lifecycle;
     _ = logging;
+    _ = terminal;
     _ = @import("dependencies_test.zig");
     _ = @import("coordinator_test.zig");
     _ = @import("config_test.zig");

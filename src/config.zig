@@ -1,6 +1,5 @@
 //! CLI, environment, and interactive credential resolution.
 
-const builtin = @import("builtin");
 const clap = @import("clap");
 const std = @import("std");
 
@@ -79,6 +78,7 @@ pub const Prompt = struct {
     vtable: *const VTable,
 
     pub const Error = error{
+        Interrupted,
         NotTerminal,
         ReadFailed,
         TooLong,
@@ -232,6 +232,26 @@ pub fn parse(
     } };
 }
 
+pub fn parseExitCode(err: anyerror) u8 {
+    return switch (err) {
+        error.OutOfMemory => 6,
+        error.ReadFailed, error.WriteFailed => 5,
+        error.Interrupted => 6,
+        else => 2,
+    };
+}
+
+/// Clears the process environment copy of a secret before removing the entry.
+pub fn clearEnvironmentSecret(
+    environment: *std.process.Environ.Map,
+    name: []const u8,
+) void {
+    if (environment.getPtr(name)) |value| {
+        std.crypto.secureZero(u8, @constCast(value.*));
+    }
+    _ = environment.swapRemove(name);
+}
+
 fn resolveValue(
     allocator: std.mem.Allocator,
     cli_value: ?[]const u8,
@@ -320,68 +340,3 @@ fn validText(value: []const u8, max_len: usize) bool {
     }
     return true;
 }
-
-pub const TerminalPrompt = struct {
-    io: std.Io,
-    input: std.Io.File,
-    output: std.Io.File,
-
-    pub fn init(io: std.Io) TerminalPrompt {
-        return .{
-            .io = io,
-            .input = .stdin(),
-            .output = .stderr(),
-        };
-    }
-
-    pub fn interface(self: *TerminalPrompt) Prompt {
-        return .{ .context = self, .vtable = &vtable };
-    }
-
-    fn read(
-        context: *anyopaque,
-        kind: PromptKind,
-        label: []const u8,
-        output: *[max_prompt_bytes]u8,
-    ) Prompt.Error![]const u8 {
-        const self: *TerminalPrompt = @ptrCast(@alignCast(context));
-        if (!(self.input.isTty(self.io) catch return error.ReadFailed)) {
-            return error.NotTerminal;
-        }
-
-        self.output.writeStreamingAll(self.io, label) catch return error.WriteFailed;
-
-        const restore_echo = if (kind == .secret) try disableEcho(self.input) else null;
-        defer if (restore_echo) |termios| restoreEcho(self.input, termios);
-
-        var reader_buffer: [max_prompt_bytes]u8 = undefined;
-        defer std.crypto.secureZero(u8, &reader_buffer);
-        var reader = self.input.readerStreaming(self.io, &reader_buffer);
-        const line = reader.interface.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.StreamTooLong => return error.TooLong,
-            else => return error.ReadFailed,
-        };
-        const trimmed = std.mem.trimEnd(u8, line, "\r");
-        if (trimmed.len > output.len) return error.TooLong;
-        @memcpy(output[0..trimmed.len], trimmed);
-
-        if (kind == .secret) self.output.writeStreamingAll(self.io, "\n") catch
-            return error.WriteFailed;
-        return output[0..trimmed.len];
-    }
-
-    fn disableEcho(file: std.Io.File) Prompt.Error!std.posix.termios {
-        if (builtin.os.tag == .windows) return error.NotTerminal;
-        const original = std.posix.tcgetattr(file.handle) catch return error.ReadFailed;
-        var hidden = original;
-        hidden.lflag.ECHO = false;
-        std.posix.tcsetattr(file.handle, .NOW, hidden) catch return error.ReadFailed;
-        return original;
-    }
-
-    fn restoreEcho(file: std.Io.File, termios: std.posix.termios) void {
-        std.posix.tcsetattr(file.handle, .NOW, termios) catch {};
-    }
-
-    const vtable: Prompt.VTable = .{ .read = read };
-};
