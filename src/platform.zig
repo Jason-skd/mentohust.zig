@@ -85,6 +85,12 @@ pub const Mschapv2 = struct {
     context: *anyopaque,
     vtable: *const VTable,
 
+    pub const Verification = struct {
+        verified: bool,
+        /// Client EAP-MSCHAPv2 success payload returned by the adapter.
+        response_data: []const u8 = &.{},
+    };
+
     pub const Error = error{
         ChallengeInvalid,
         ComputationFailed,
@@ -103,7 +109,7 @@ pub const Mschapv2 = struct {
             context: *anyopaque,
             challenge: []const u8,
             credentials: rj.session.Credentials,
-        ) Error!bool,
+        ) Error!Verification,
     };
 
     pub fn authenticate(
@@ -118,7 +124,7 @@ pub const Mschapv2 = struct {
         self: Mschapv2,
         challenge: []const u8,
         credentials: rj.session.Credentials,
-    ) Error!bool {
+    ) Error!Verification {
         return self.vtable.verify(self.context, challenge, credentials);
     }
 };

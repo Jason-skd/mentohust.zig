@@ -49,11 +49,12 @@ pub fn dispatch(
         },
         .verify_mschapv2 => |challenge| blk: {
             const value = credentials orelse return error.CredentialsRequired;
+            const verification = try ports.mschapv2.verify(challenge.request_data, value);
             break :blk .{ .session_input = externalResultInput(
                 generation,
                 .{ .mschapv2_success = .{
-                    .verified = try ports.mschapv2.verify(challenge.request_data, value),
-                    .response_data = challenge.request_data,
+                    .verified = verification.verified,
+                    .response_data = verification.response_data,
                 } },
             ) };
         },

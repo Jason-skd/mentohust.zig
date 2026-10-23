@@ -28,7 +28,10 @@ const Harness = struct {
     mschap_authenticate_calls: usize = 0,
     mschap_verify_calls: usize = 0,
     mschap_response: [2]u8 = .{ 2, 0x22 },
-    mschap_verified: bool = true,
+    mschap_verification: platform.Mschapv2.Verification = .{
+        .verified = true,
+        .response_data = &.{3},
+    },
     mschap_error: ?platform.Mschapv2.Error = null,
     clock_value: platform.Timestamp = timestamp(0),
     clock_calls: usize = 0,
@@ -112,13 +115,13 @@ fn mschapVerify(
     context: *anyopaque,
     challenge: []const u8,
     credentials: rj.session.Credentials,
-) platform.Mschapv2.Error!bool {
+) platform.Mschapv2.Error!platform.Mschapv2.Verification {
     _ = challenge;
     _ = credentials;
     const fake = harness(context);
     if (fake.mschap_error) |err| return err;
     fake.mschap_verify_calls += 1;
-    return fake.mschap_verified;
+    return fake.mschap_verification;
 }
 
 fn clockNow(context: *anyopaque) platform.Clock.Error!platform.Timestamp {
@@ -441,6 +444,16 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
         try coordinator.dispatch(&ports, success_batch.generation, success_batch.actions[1], credentials),
     );
     try std.testing.expectEqual(@as(usize, 1), fake.mschap_verify_calls);
+    try std.testing.expectEqual(
+        rj.session.ExternalResult.mschapv2_success,
+        std.meta.activeTag(verified_input.external_result.result),
+    );
+    try std.testing.expect(verified_input.external_result.result.mschapv2_success.verified);
+    try std.testing.expectEqualSlices(
+        u8,
+        &.{3},
+        verified_input.external_result.result.mschapv2_success.response_data,
+    );
 
     var verified = try session.step(timestamp(9 * std.time.ns_per_s), verified_input);
     defer verified.deinit(std.testing.allocator);
