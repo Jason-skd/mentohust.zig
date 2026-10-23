@@ -53,6 +53,26 @@ pub fn formatEvent(event: lifecycle.Event, writer: *std.Io.Writer) std.Io.Writer
         .direct_authentication_failed => try writer.writeAll(
             "mentohust: error direct_authentication_failed\n",
         ),
+        .authentication_rejected => |failure| {
+            try writer.writeAll("mentohust: error authentication_rejected ");
+            try formatFailure(failure, writer);
+        },
+        .retry_exhausted => |failure| {
+            try writer.writeAll("mentohust: error retry_exhausted ");
+            try formatFailure(failure, writer);
+        },
+        .configuration_failure => |failure| {
+            try writer.writeAll("mentohust: error configuration_failure ");
+            try formatFailure(failure, writer);
+        },
+        .security_failure => |failure| {
+            try writer.writeAll("mentohust: error security_failure ");
+            try formatFailure(failure, writer);
+        },
+        .internal_failure => |err| try writer.print(
+            "mentohust: error internal_failure error={s}\n",
+            .{@errorName(err)},
+        ),
         .shutdown_started => |signal| try writer.print(
             "mentohust: info shutdown_started signal={t}\n",
             .{signal},
@@ -65,5 +85,18 @@ pub fn formatEvent(event: lifecycle.Event, writer: *std.Io.Writer) std.Io.Writer
             "mentohust: error shutdown_failure error={s}\n",
             .{@errorName(err)},
         ),
+    }
+}
+
+fn formatFailure(
+    failure: lifecycle.StepFailure,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
+    if (failure.reason) |reason| {
+        try writer.print("reason={t}\n", .{reason});
+    } else if (failure.cause) |err| {
+        try writer.print("error={s}\n", .{@errorName(err)});
+    } else {
+        try writer.writeAll("reason=unknown\n");
     }
 }

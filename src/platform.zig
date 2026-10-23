@@ -8,28 +8,30 @@ const rj = @import("rj-connect");
 
 pub const Timestamp = std.Io.Timestamp;
 pub const Duration = std.Io.Duration;
+pub const Deadline = ?Timestamp;
 
 pub const Ethernet = struct {
     context: *anyopaque,
     vtable: *const VTable,
 
     pub const Error = error{
+        DeadlineExceeded,
         InterfaceClosed,
         ReceiveFailed,
         SendFailed,
     };
 
     pub const VTable = struct {
-        send: *const fn (context: *anyopaque, frame: []const u8) Error!void,
-        tryReceive: *const fn (context: *anyopaque) Error!?[]const u8,
+        send: *const fn (context: *anyopaque, frame: []const u8, deadline: Deadline) Error!void,
+        tryReceive: *const fn (context: *anyopaque, deadline: Deadline) Error!?[]const u8,
     };
 
-    pub fn send(self: Ethernet, frame: []const u8) Error!void {
-        return self.vtable.send(self.context, frame);
+    pub fn send(self: Ethernet, frame: []const u8, deadline: Deadline) Error!void {
+        return self.vtable.send(self.context, frame, deadline);
     }
 
-    pub fn tryReceive(self: Ethernet) Error!?[]const u8 {
-        return self.vtable.tryReceive(self.context);
+    pub fn tryReceive(self: Ethernet, deadline: Deadline) Error!?[]const u8 {
+        return self.vtable.tryReceive(self.context, deadline);
     }
 };
 
@@ -38,17 +40,18 @@ pub const NetworkState = struct {
     vtable: *const VTable,
 
     pub const Error = error{
+        DeadlineExceeded,
         IoFailed,
         LeaseInvalid,
         LeaseUnavailable,
     };
 
     pub const VTable = struct {
-        readDhcpLease: *const fn (context: *anyopaque) Error!rj.session.DhcpLease,
+        readDhcpLease: *const fn (context: *anyopaque, deadline: Deadline) Error!rj.session.DhcpLease,
     };
 
-    pub fn readDhcpLease(self: NetworkState) Error!rj.session.DhcpLease {
-        return self.vtable.readDhcpLease(self.context);
+    pub fn readDhcpLease(self: NetworkState, deadline: Deadline) Error!rj.session.DhcpLease {
+        return self.vtable.readDhcpLease(self.context, deadline);
     }
 };
 
@@ -58,6 +61,7 @@ pub const Tls = struct {
 
     pub const Error = error{
         CertificateRejected,
+        DeadlineExceeded,
         ProtocolFailed,
         ResourceExhausted,
         TlsIoFailed,
@@ -69,6 +73,7 @@ pub const Tls = struct {
             context: *anyopaque,
             operation: rj.session.TunnelOperation,
             bytes: []const u8,
+            deadline: Deadline,
         ) Error!rj.session.TunnelOutput,
     };
 
@@ -76,8 +81,9 @@ pub const Tls = struct {
         self: Tls,
         operation: rj.session.TunnelOperation,
         bytes: []const u8,
+        deadline: Deadline,
     ) Error!rj.session.TunnelOutput {
-        return self.vtable.process(self.context, operation, bytes);
+        return self.vtable.process(self.context, operation, bytes, deadline);
     }
 };
 
@@ -94,6 +100,7 @@ pub const Mschapv2 = struct {
     pub const Error = error{
         ChallengeInvalid,
         ComputationFailed,
+        DeadlineExceeded,
         ResourceExhausted,
         VerificationFailed,
     };
@@ -104,11 +111,13 @@ pub const Mschapv2 = struct {
             context: *anyopaque,
             challenge: []const u8,
             credentials: rj.session.Credentials,
+            deadline: Deadline,
         ) Error![]const u8,
         verify: *const fn (
             context: *anyopaque,
             challenge: []const u8,
             credentials: rj.session.Credentials,
+            deadline: Deadline,
         ) Error!Verification,
     };
 
@@ -116,16 +125,18 @@ pub const Mschapv2 = struct {
         self: Mschapv2,
         challenge: []const u8,
         credentials: rj.session.Credentials,
+        deadline: Deadline,
     ) Error![]const u8 {
-        return self.vtable.authenticate(self.context, challenge, credentials);
+        return self.vtable.authenticate(self.context, challenge, credentials, deadline);
     }
 
     pub fn verify(
         self: Mschapv2,
         challenge: []const u8,
         credentials: rj.session.Credentials,
+        deadline: Deadline,
     ) Error!Verification {
-        return self.vtable.verify(self.context, challenge, credentials);
+        return self.vtable.verify(self.context, challenge, credentials, deadline);
     }
 };
 
@@ -174,6 +185,32 @@ pub const Stop = struct {
     }
 };
 
+pub const Watchdog = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const Error = error{WatchdogFailed};
+
+    pub const VTable = struct {
+        /// Arms a hard process exit after `timeout` unless this watchdog is
+        /// disarmed first. The adapter owns the native timer and exit path.
+        arm: *const fn (
+            context: *anyopaque,
+            timeout: Duration,
+            exit_code: u8,
+        ) Error!void,
+        disarm: *const fn (context: *anyopaque) void,
+    };
+
+    pub fn arm(self: Watchdog, timeout: Duration, exit_code: u8) Error!void {
+        return self.vtable.arm(self.context, timeout, exit_code);
+    }
+
+    pub fn disarm(self: Watchdog) void {
+        self.vtable.disarm(self.context);
+    }
+};
+
 pub const Ports = struct {
     ethernet: Ethernet,
     network: NetworkState,
@@ -181,4 +218,5 @@ pub const Ports = struct {
     mschapv2: Mschapv2,
     clock: Clock,
     stop: Stop,
+    watchdog: Watchdog,
 };

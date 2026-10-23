@@ -73,6 +73,11 @@ pub const Event = union(enum) {
     },
     reauthentication_required,
     direct_authentication_failed,
+    authentication_rejected: StepFailure,
+    retry_exhausted: StepFailure,
+    configuration_failure: StepFailure,
+    security_failure: StepFailure,
+    internal_failure: anyerror,
     shutdown_started: platform.Stop.Request,
     shutdown_completed: platform.Stop.Request,
     shutdown_failure: anyerror,
@@ -146,9 +151,10 @@ pub fn run(
     policy: Policy,
     reporter: Reporter,
 ) Termination {
-    return runInner(session, ports, credentials, policy, reporter) catch |err| .{
-        .internal_failure = err,
-    };
+    const termination = runInner(session, ports, credentials, policy, reporter) catch |err|
+        terminateAfterInternalError(session, ports, policy, err, reporter);
+    reportTermination(reporter, termination);
+    return termination;
 }
 
 const RunError = error{
@@ -156,7 +162,6 @@ const RunError = error{
     InvalidActionOrder,
     NestedStepLimitExceeded,
     MissingFailureReason,
-    ShutdownTimedOut,
 };
 
 fn runInner(
@@ -185,32 +190,16 @@ fn runInner(
 
         if (!started_once and session.phase() == .idle) {
             started_once = true;
-            try reporter.write(.{ .authentication_started = .{
-                .retry_attempt = null,
-            } });
-            const outcome = session.step(now, .start) catch |err| {
-                const resolution = try handleSessionError(
-                    session,
-                    ports,
-                    now,
-                    err,
-                    &tracker,
-                    &online,
-                    reporter,
-                );
-                if (resolution.termination) |termination| return termination;
-                pending_start = resolution.pending_start;
-                continue;
-            };
-            const processed = try processStep(
+            const processed = try startAttempt(
                 session,
                 ports,
                 credentials,
+                policy,
                 &tracker,
                 &online,
                 now,
                 0,
-                outcome,
+                null,
                 reporter,
             );
             if (processed.termination) |termination| return termination;
@@ -224,33 +213,17 @@ fn runInner(
                     null
                 else
                     tracker.retryAttempt();
-                try reporter.write(.{ .authentication_started = .{
-                    .retry_attempt = retry_attempt,
-                } });
                 pending_start = null;
-                const outcome = session.step(now, .start) catch |err| {
-                    const resolution = try handleSessionError(
-                        session,
-                        ports,
-                        now,
-                        err,
-                        &tracker,
-                        &online,
-                        reporter,
-                    );
-                    if (resolution.termination) |termination| return termination;
-                    pending_start = resolution.pending_start;
-                    continue;
-                };
-                const processed = try processStep(
+                const processed = try startAttempt(
                     session,
                     ports,
                     credentials,
+                    policy,
                     &tracker,
                     &online,
                     now,
                     0,
-                    outcome,
+                    retry_attempt,
                     reporter,
                 );
                 if (processed.termination) |termination| return termination;
@@ -263,11 +236,12 @@ fn runInner(
             continue;
         }
 
-        const frame = ports.ethernet.tryReceive() catch |err| {
+        const frame = ports.ethernet.tryReceive(null) catch |err| {
             const resolution = try handleAdapterError(
                 session,
                 ports,
                 now,
+                policy.shutdown_timeout,
                 err,
                 &tracker,
                 &online,
@@ -286,6 +260,7 @@ fn runInner(
                     session,
                     ports,
                     now,
+                    policy.shutdown_timeout,
                     err,
                     &tracker,
                     &online,
@@ -299,6 +274,7 @@ fn runInner(
                 session,
                 ports,
                 credentials,
+                policy,
                 &tracker,
                 &online,
                 now,
@@ -323,6 +299,7 @@ fn runInner(
                             session,
                             ports,
                             now,
+                            policy.shutdown_timeout,
                             err,
                             &tracker,
                             &online,
@@ -336,6 +313,7 @@ fn runInner(
                         session,
                         ports,
                         credentials,
+                        policy,
                         &tracker,
                         &online,
                         now,
@@ -364,10 +342,56 @@ const Processed = struct {
     termination: ?Termination = null,
 };
 
+fn startAttempt(
+    session: *rj.session.Session,
+    ports: platform.Ports,
+    credentials: rj.session.Credentials,
+    policy: Policy,
+    tracker: *Tracker,
+    online: *bool,
+    now: std.Io.Timestamp,
+    depth: usize,
+    retry_attempt: ?u32,
+    reporter: Reporter,
+) (RunError || Reporter.Error)!Processed {
+    try reporter.write(.{ .authentication_started = .{
+        .retry_attempt = retry_attempt,
+    } });
+    const outcome = session.step(now, .start) catch |err| {
+        const resolution = try handleSessionError(
+            session,
+            ports,
+            now,
+            policy.shutdown_timeout,
+            err,
+            tracker,
+            online,
+            reporter,
+        );
+        return .{
+            .pending_start = resolution.pending_start,
+            .termination = resolution.termination,
+        };
+    };
+    return processStep(
+        session,
+        ports,
+        credentials,
+        policy,
+        tracker,
+        online,
+        now,
+        depth,
+        outcome,
+        reporter,
+    );
+}
+
 fn processStep(
     session: *rj.session.Session,
     ports: platform.Ports,
     credentials: rj.session.Credentials,
+    policy: Policy,
     tracker: *Tracker,
     online: *bool,
     now: std.Io.Timestamp,
@@ -387,13 +411,14 @@ fn processStep(
     var direct_authentication_failed = false;
 
     for (outcome.actions, 0..) |_, index| {
-        const result = coordinator.dispatch(&ports, &outcome, index, credentials) catch |err| {
+        const result = coordinator.dispatch(&ports, &outcome, index, credentials, null) catch |err| {
             owned = false;
             outcome.deinit(session.allocator);
             const resolution = try handleAdapterError(
                 session,
                 ports,
                 now,
+                policy.shutdown_timeout,
                 err,
                 tracker,
                 online,
@@ -433,6 +458,7 @@ fn processStep(
                 session,
                 ports,
                 now,
+                policy.shutdown_timeout,
                 err,
                 tracker,
                 online,
@@ -449,6 +475,7 @@ fn processStep(
             session,
             ports,
             credentials,
+            policy,
             tracker,
             online,
             now,
@@ -466,6 +493,7 @@ fn processStep(
                 session,
                 ports,
                 now,
+                policy.shutdown_timeout,
                 err,
                 tracker,
                 online,
@@ -482,6 +510,7 @@ fn processStep(
             session,
             ports,
             credentials,
+            policy,
             tracker,
             online,
             now,
@@ -495,10 +524,11 @@ fn processStep(
         try reporter.write(.direct_authentication_failed);
         owned = false;
         outcome.deinit(session.allocator);
-        const resolution = try cleanupFailure(
+        const resolution = cleanupFailure(
             session,
             ports,
             now,
+            policy.shutdown_timeout,
             tracker,
             online,
             .authentication_rejected,
@@ -513,37 +543,20 @@ fn processStep(
 
     if (reauth_requested) {
         try reporter.write(.reauthentication_required);
-        try reporter.write(.{ .authentication_started = .{ .retry_attempt = null } });
         tracker.reset();
         online.* = false;
-        const next = session.step(now, .start) catch |err| {
-            owned = false;
-            outcome.deinit(session.allocator);
-            const resolution = try handleSessionError(
-                session,
-                ports,
-                now,
-                err,
-                tracker,
-                online,
-                reporter,
-            );
-            return .{
-                .pending_start = resolution.pending_start,
-                .termination = resolution.termination,
-            };
-        };
-        outcome.deinit(session.allocator);
         owned = false;
-        return processStep(
+        outcome.deinit(session.allocator);
+        return startAttempt(
             session,
             ports,
             credentials,
+            policy,
             tracker,
             online,
             now,
             depth + 1,
-            next,
+            null,
             reporter,
         );
     }
@@ -570,10 +583,11 @@ fn processStep(
         if (class != .transient and outcome.phase != .idle) {
             owned = false;
             outcome.deinit(session.allocator);
-            const resolution = try cleanupFailure(
+            const resolution = cleanupFailure(
                 session,
                 ports,
                 now,
+                policy.shutdown_timeout,
                 tracker,
                 online,
                 class,
@@ -607,6 +621,7 @@ fn handleSessionError(
     session: *rj.session.Session,
     ports: platform.Ports,
     now: std.Io.Timestamp,
+    shutdown_timeout: std.Io.Duration,
     err: rj.session.Error,
     tracker: *Tracker,
     online: *bool,
@@ -616,13 +631,24 @@ fn handleSessionError(
     if (class == .transient) {
         reporter.write(.{ .transient_error = err }) catch return error.WriteFailed;
     }
-    return cleanupFailure(session, ports, now, tracker, online, class, .{ .cause = err }, reporter);
+    return cleanupFailure(
+        session,
+        ports,
+        now,
+        shutdown_timeout,
+        tracker,
+        online,
+        class,
+        .{ .cause = err },
+        reporter,
+    );
 }
 
 fn handleAdapterError(
     session: *rj.session.Session,
     ports: platform.Ports,
     now: std.Io.Timestamp,
+    shutdown_timeout: std.Io.Duration,
     err: coordinator.Error,
     tracker: *Tracker,
     online: *bool,
@@ -632,7 +658,17 @@ fn handleAdapterError(
     if (class == .transient) {
         reporter.write(.{ .transient_error = err }) catch return error.WriteFailed;
     }
-    return cleanupFailure(session, ports, now, tracker, online, class, .{ .cause = err }, reporter);
+    return cleanupFailure(
+        session,
+        ports,
+        now,
+        shutdown_timeout,
+        tracker,
+        online,
+        class,
+        .{ .cause = err },
+        reporter,
+    );
 }
 
 const FailureResolution = struct {
@@ -640,34 +676,64 @@ const FailureResolution = struct {
     termination: ?Termination = null,
 };
 
+const SessionCleanup = union(enum) {
+    completed,
+    failed: anyerror,
+};
+
+fn cancelAndDispatch(
+    session: *rj.session.Session,
+    ports: platform.Ports,
+    now: std.Io.Timestamp,
+    deadline: std.Io.Timestamp,
+    reporter: Reporter,
+) SessionCleanup {
+    if (session.phase() == .idle) return .completed;
+
+    var canceled = session.step(now, .cancel) catch |err| switch (err) {
+        error.InvalidState => {
+            return if (session.phase() == .idle) .completed else .{ .failed = err };
+        },
+        else => {
+            reportBestEffort(reporter, .{ .shutdown_failure = err });
+            return .{ .failed = err };
+        },
+    };
+    defer canceled.deinit(session.allocator);
+
+    for (canceled.actions, 0..) |_, index| {
+        _ = coordinator.dispatch(&ports, &canceled, index, null, deadline) catch |err| {
+            reportBestEffort(reporter, .{ .shutdown_failure = err });
+            if (err == error.DeadlineExceeded) return .{ .failed = err };
+        };
+    }
+    return .completed;
+}
+
 fn cleanupFailure(
     session: *rj.session.Session,
     ports: platform.Ports,
     now: std.Io.Timestamp,
+    shutdown_timeout: std.Io.Duration,
     tracker: *Tracker,
     online: *bool,
     class: FailureClass,
     failure: StepFailure,
     reporter: Reporter,
-) (RunError || Reporter.Error)!FailureResolution {
+) FailureResolution {
     if (session.phase() != .idle) {
-        var canceled = session.step(now, .cancel) catch |err| switch (err) {
-            error.InvalidState => {
-                if (session.phase() == .idle) {
-                    return resolveAfterCleanup(now, tracker, online, class, failure, reporter);
-                }
-                return error.InvalidActionOrder;
-            },
-            else => {
-                reporter.write(.{ .shutdown_failure = err }) catch return error.WriteFailed;
-                return resolveAfterCleanup(now, tracker, online, class, failure, reporter);
-            },
+        ports.watchdog.arm(shutdown_timeout, cleanupExitCode(class, failure)) catch |err| {
+            reportBestEffort(reporter, .{ .shutdown_failure = err });
+            return .{ .termination = cleanupAbortTermination(class, failure, err) };
         };
-        defer canceled.deinit(session.allocator);
-        for (canceled.actions, 0..) |_, index| {
-            _ = coordinator.dispatch(&ports, &canceled, index, null) catch |err| {
-                reporter.write(.{ .shutdown_failure = err }) catch return error.WriteFailed;
-            };
+        defer ports.watchdog.disarm();
+
+        const deadline = now.addDuration(shutdown_timeout);
+        switch (cancelAndDispatch(session, ports, now, deadline, reporter)) {
+            .completed => {},
+            .failed => |err| {
+                return .{ .termination = cleanupAbortTermination(class, failure, err) };
+            },
         }
     }
     return resolveAfterCleanup(now, tracker, online, class, failure, reporter);
@@ -680,14 +746,14 @@ fn resolveAfterCleanup(
     class: FailureClass,
     failure: StepFailure,
     reporter: Reporter,
-) Reporter.Error!FailureResolution {
+) FailureResolution {
     if (class == .transient) {
         online.* = false;
-        try reporter.write(.disconnected);
+        reportBestEffort(reporter, .disconnected);
         const retry_at = tracker.scheduleRetry(now) orelse {
             return .{ .termination = .{ .retry_exhausted = failure } };
         };
-        try reporter.write(.{ .retry_scheduled = .{
+        reportBestEffort(reporter, .{ .retry_scheduled = .{
             .attempt = tracker.retryAttempt(),
             .delay = now.durationTo(retry_at),
         } });
@@ -696,37 +762,56 @@ fn resolveAfterCleanup(
     return .{ .termination = terminationFor(class, failure) };
 }
 
+fn terminateAfterInternalError(
+    session: *rj.session.Session,
+    ports: platform.Ports,
+    policy: Policy,
+    err: anyerror,
+    reporter: Reporter,
+) Termination {
+    const now = ports.clock.now() catch |clock_err| {
+        reportBestEffort(reporter, .{ .shutdown_failure = clock_err });
+        return .{ .internal_failure = clock_err };
+    };
+    var tracker: Tracker = .{ .policy = policy };
+    var online = false;
+    const resolution = cleanupFailure(
+        session,
+        ports,
+        now,
+        policy.shutdown_timeout,
+        &tracker,
+        &online,
+        .internal,
+        .{ .cause = err },
+        reporter,
+    );
+    return resolution.termination orelse .{ .internal_failure = err };
+}
+
 fn stopAndCleanup(
     session: *rj.session.Session,
     ports: platform.Ports,
     shutdown_timeout: std.Io.Duration,
     signal: platform.Stop.Request,
     reporter: Reporter,
-) (RunError || Reporter.Error)!Termination {
-    try reporter.write(.{ .shutdown_started = signal });
+) Termination {
+    ports.watchdog.arm(shutdown_timeout, signalExitCode(signal)) catch |err| {
+        reportBestEffort(reporter, .{ .shutdown_failure = err });
+        return .{ .signal = signal };
+    };
+    defer ports.watchdog.disarm();
+
+    reportBestEffort(reporter, .{ .shutdown_started = signal });
     const started = ports.clock.now() catch |err| {
-        return .{ .internal_failure = err };
+        reportBestEffort(reporter, .{ .shutdown_failure = err });
+        return .{ .signal = signal };
     };
     const deadline = started.addDuration(shutdown_timeout);
 
-    if (session.phase() != .idle) {
-        var canceled = session.step(started, .cancel) catch |err| switch (err) {
-            error.InvalidState => {
-                if (session.phase() != .idle) return .{ .internal_failure = err };
-                return finishShutdown(ports, deadline, signal, reporter);
-            },
-            else => {
-                reporter.write(.{ .shutdown_failure = err }) catch return error.WriteFailed;
-                return .{ .internal_failure = err };
-            },
-        };
-        defer canceled.deinit(session.allocator);
-
-        for (canceled.actions, 0..) |_, index| {
-            _ = coordinator.dispatch(&ports, &canceled, index, null) catch |err| {
-                reporter.write(.{ .shutdown_failure = err }) catch return error.WriteFailed;
-            };
-        }
+    switch (cancelAndDispatch(session, ports, started, deadline, reporter)) {
+        .completed => {},
+        .failed => return .{ .signal = signal },
     }
 
     return finishShutdown(ports, deadline, signal, reporter);
@@ -737,13 +822,63 @@ fn finishShutdown(
     deadline: std.Io.Timestamp,
     signal: platform.Stop.Request,
     reporter: Reporter,
-) (RunError || Reporter.Error)!Termination {
+) Termination {
     const now = ports.clock.now() catch |err| {
-        return .{ .internal_failure = err };
+        reportBestEffort(reporter, .{ .shutdown_failure = err });
+        return .{ .signal = signal };
     };
-    if (now.compare(.gt, deadline)) return .{ .internal_failure = error.ShutdownTimedOut };
-    try reporter.write(.{ .shutdown_completed = signal });
+    if (now.compare(.gt, deadline)) {
+        reportBestEffort(reporter, .{ .shutdown_failure = error.ShutdownTimedOut });
+        return .{ .signal = signal };
+    }
+    reportBestEffort(reporter, .{ .shutdown_completed = signal });
     return .{ .signal = signal };
+}
+
+fn cleanupAbortTermination(
+    class: FailureClass,
+    failure: StepFailure,
+    cause: anyerror,
+) Termination {
+    return switch (class) {
+        .transient, .internal => .{ .internal_failure = cause },
+        else => terminationFor(class, failure),
+    };
+}
+
+fn cleanupExitCode(class: FailureClass, failure: StepFailure) u8 {
+    return switch (class) {
+        .transient, .internal => 6,
+        else => terminationFor(class, failure).exitCode(),
+    };
+}
+
+fn signalExitCode(signal: platform.Stop.Request) u8 {
+    return switch (signal) {
+        .interrupt => 130,
+        .terminate => 143,
+    };
+}
+
+fn reportBestEffort(reporter: Reporter, event: Event) void {
+    reporter.write(event) catch {};
+}
+
+fn reportTermination(reporter: Reporter, termination: Termination) void {
+    switch (termination) {
+        .signal => {},
+        .authentication_rejected => |failure| reportBestEffort(
+            reporter,
+            .{ .authentication_rejected = failure },
+        ),
+        .retry_exhausted => |failure| reportBestEffort(reporter, .{ .retry_exhausted = failure }),
+        .configuration_failure => |failure| reportBestEffort(
+            reporter,
+            .{ .configuration_failure = failure },
+        ),
+        .security_failure => |failure| reportBestEffort(reporter, .{ .security_failure = failure }),
+        .internal_failure => |err| reportBestEffort(reporter, .{ .internal_failure = err }),
+    }
 }
 
 fn terminationFor(class: FailureClass, failure: StepFailure) Termination {
@@ -808,6 +943,7 @@ pub fn classifySessionError(err: rj.session.Error) FailureClass {
 
 pub fn classifyCoordinatorError(err: coordinator.Error) FailureClass {
     return switch (err) {
+        error.DeadlineExceeded => .internal,
         error.InterfaceClosed, error.ReceiveFailed, error.SendFailed => .transient,
         error.IoFailed, error.LeaseUnavailable => .transient,
         error.LeaseInvalid => .configuration,

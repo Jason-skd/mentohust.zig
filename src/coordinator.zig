@@ -35,23 +35,24 @@ pub fn dispatch(
     outcome: *const rj.session.Outcome,
     action_index: usize,
     credentials: ?rj.session.Credentials,
+    deadline: platform.Deadline,
 ) Error!Result {
     if (action_index >= outcome.actions.len) return error.ActionOutOfRange;
     const action = outcome.actions[action_index];
     const generation = outcome.generation;
     return switch (action) {
         .send_frame => |frame| blk: {
-            try ports.ethernet.send(frame);
+            try ports.ethernet.send(frame, deadline);
             break :blk .handled;
         },
         .request_credentials => |purpose| .{ .request_credentials = purpose },
         .poll_dhcp => .{ .session_input = externalResultInput(
             generation,
-            .{ .dhcp_lease = try ports.network.readDhcpLease() },
+            .{ .dhcp_lease = try ports.network.readDhcpLease(deadline) },
         ) },
         .tunnel_input => |input| .{ .session_input = .{ .tunnel_output = .{
             .generation = generation,
-            .output = try ports.tls.process(input.operation, input.bytes),
+            .output = try ports.tls.process(input.operation, input.bytes, deadline),
         } } },
         .authenticate_mschapv2 => |challenge| blk: {
             const value = credentials orelse return error.CredentialsRequired;
@@ -59,13 +60,17 @@ pub fn dispatch(
                 generation,
                 .{ .mschapv2_response = .{
                     .credentials = value,
-                    .response_data = try ports.mschapv2.authenticate(challenge.request_data, value),
+                    .response_data = try ports.mschapv2.authenticate(
+                        challenge.request_data,
+                        value,
+                        deadline,
+                    ),
                 } },
             ) };
         },
         .verify_mschapv2 => |challenge| blk: {
             const value = credentials orelse return error.CredentialsRequired;
-            const verification = try ports.mschapv2.verify(challenge.request_data, value);
+            const verification = try ports.mschapv2.verify(challenge.request_data, value, deadline);
             break :blk .{ .session_input = externalResultInput(
                 generation,
                 .{ .mschapv2_success = .{

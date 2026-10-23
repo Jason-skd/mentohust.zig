@@ -49,6 +49,8 @@ const Harness = struct {
     stop_request: ?platform.Stop.Request = null,
     stop_calls: usize = 0,
     stop_error: ?platform.Stop.Error = null,
+    watchdog_arms: usize = 0,
+    watchdog_disarms: usize = 0,
 
     fn ports(self: *Harness) platform.Ports {
         return .{
@@ -58,6 +60,7 @@ const Harness = struct {
             .mschapv2 = .{ .context = self, .vtable = &mschapv2_vtable },
             .clock = .{ .context = self, .vtable = &clock_vtable },
             .stop = .{ .context = self, .vtable = &stop_vtable },
+            .watchdog = .{ .context = self, .vtable = &watchdog_vtable },
         };
     }
 };
@@ -66,7 +69,11 @@ fn harness(context: *anyopaque) *Harness {
     return @ptrCast(@alignCast(context));
 }
 
-fn ethernetSend(context: *anyopaque, frame: []const u8) platform.Ethernet.Error!void {
+fn ethernetSend(
+    context: *anyopaque,
+    frame: []const u8,
+    _: platform.Deadline,
+) platform.Ethernet.Error!void {
     const fake = harness(context);
     if (fake.send_error) |err| return err;
     if (frame.len > fake.last_sent.len) return error.SendFailed;
@@ -75,7 +82,10 @@ fn ethernetSend(context: *anyopaque, frame: []const u8) platform.Ethernet.Error!
     fake.last_sent_len = frame.len;
 }
 
-fn ethernetReceive(context: *anyopaque) platform.Ethernet.Error!?[]const u8 {
+fn ethernetReceive(
+    context: *anyopaque,
+    _: platform.Deadline,
+) platform.Ethernet.Error!?[]const u8 {
     const fake = harness(context);
     if (fake.receive_error) |err| return err;
     const frame = fake.receive_frame;
@@ -83,7 +93,10 @@ fn ethernetReceive(context: *anyopaque) platform.Ethernet.Error!?[]const u8 {
     return frame;
 }
 
-fn networkReadDhcpLease(context: *anyopaque) platform.NetworkState.Error!rj.session.DhcpLease {
+fn networkReadDhcpLease(
+    context: *anyopaque,
+    _: platform.Deadline,
+) platform.NetworkState.Error!rj.session.DhcpLease {
     const fake = harness(context);
     if (fake.network_error) |err| return err;
     fake.dhcp_reads += 1;
@@ -94,6 +107,7 @@ fn tlsProcess(
     context: *anyopaque,
     operation: rj.session.TunnelOperation,
     bytes: []const u8,
+    _: platform.Deadline,
 ) platform.Tls.Error!rj.session.TunnelOutput {
     const fake = harness(context);
     if (fake.tls_error) |err| return err;
@@ -114,6 +128,7 @@ fn mschapAuthenticate(
     context: *anyopaque,
     challenge: []const u8,
     credentials: rj.session.Credentials,
+    _: platform.Deadline,
 ) platform.Mschapv2.Error![]const u8 {
     const fake = harness(context);
     if (fake.mschap_error) |err| return err;
@@ -129,6 +144,7 @@ fn mschapVerify(
     context: *anyopaque,
     challenge: []const u8,
     credentials: rj.session.Credentials,
+    _: platform.Deadline,
 ) platform.Mschapv2.Error!platform.Mschapv2.Verification {
     const fake = harness(context);
     if (fake.mschap_error) |err| return err;
@@ -166,6 +182,18 @@ fn stopTryNext(context: *anyopaque) platform.Stop.Error!?platform.Stop.Request {
     return request;
 }
 
+fn watchdogArm(
+    context: *anyopaque,
+    _: platform.Duration,
+    _: u8,
+) platform.Watchdog.Error!void {
+    harness(context).watchdog_arms += 1;
+}
+
+fn watchdogDisarm(context: *anyopaque) void {
+    harness(context).watchdog_disarms += 1;
+}
+
 const ethernet_vtable: platform.Ethernet.VTable = .{
     .send = ethernetSend,
     .tryReceive = ethernetReceive,
@@ -191,6 +219,10 @@ const clock_vtable: platform.Clock.VTable = .{
 
 const stop_vtable: platform.Stop.VTable = .{
     .tryNext = stopTryNext,
+};
+const watchdog_vtable: platform.Watchdog.VTable = .{
+    .arm = watchdogArm,
+    .disarm = watchdogDisarm,
 };
 
 fn timestamp(nanoseconds: i96) platform.Timestamp {
@@ -259,7 +291,7 @@ fn dispatchSends(
     for (outcome.actions, 0..) |action, index| {
         try std.testing.expectEqual(rj.session.Action.send_frame, std.meta.activeTag(action));
         const expected = action.send_frame;
-        const result = try coordinator.dispatch(&ports, outcome, index, null);
+        const result = try coordinator.dispatch(&ports, outcome, index, null, null);
         try std.testing.expectEqual(coordinator.Result.handled, result);
         try std.testing.expectEqual(expected.len, fake.last_sent_len);
         try std.testing.expectEqualSlices(u8, expected, fake.last_sent[0..fake.last_sent_len]);
@@ -281,7 +313,7 @@ fn dispatchSynthetic(
         .failure = null,
         .generation = generation,
     };
-    return coordinator.dispatch(ports, &outcome, 0, credentials);
+    return coordinator.dispatch(ports, &outcome, 0, credentials, null);
 }
 
 fn expectRequestCredentials(result: coordinator.Result) !rj.session.CredentialPurpose {
@@ -321,11 +353,11 @@ test "EAP-MD5 session collaborates with all platform ports" {
 
     const identity = identityRequest(0x16);
     fake.receive_frame = &identity;
-    const inbound = (try ports.ethernet.tryReceive()).?;
+    const inbound = (try ports.ethernet.tryReceive(null)).?;
     var acquired = try session.step(timestamp(std.time.ns_per_s), frameInput(&session, inbound));
     defer acquired.deinit(std.testing.allocator);
     const identity_request = try expectRequestCredentials(
-        try coordinator.dispatch(&ports, &acquired, 0, null),
+        try coordinator.dispatch(&ports, &acquired, 0, null, null),
     );
     try std.testing.expectEqual(rj.session.CredentialPurpose.identity, identity_request);
 
@@ -337,7 +369,7 @@ test "EAP-MD5 session collaborates with all platform ports" {
     var challenged = try session.step(timestamp(3 * std.time.ns_per_s), frameInput(&session, &challenge));
     defer challenged.deinit(std.testing.allocator);
     const challenge_request = try expectRequestCredentials(
-        try coordinator.dispatch(&ports, &challenged, 0, null),
+        try coordinator.dispatch(&ports, &challenged, 0, null, null),
     );
     try std.testing.expectEqual(rj.session.CredentialPurpose.md5_challenge, challenge_request);
 
@@ -352,7 +384,7 @@ test "EAP-MD5 session collaborates with all platform ports" {
     defer waiting.deinit(std.testing.allocator);
     try std.testing.expectEqual(rj.session.Action.poll_dhcp, waiting.actions[0]);
     const dhcp_input = try expectSessionInput(
-        try coordinator.dispatch(&ports, &waiting, 0, null),
+        try coordinator.dispatch(&ports, &waiting, 0, null, null),
     );
     try std.testing.expectEqual(@as(usize, 1), fake.dhcp_reads);
     try std.testing.expect(dhcp_input.external_result.generation.eql(waiting.generation));
@@ -403,7 +435,7 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
     var acquired = try session.step(timestamp(std.time.ns_per_s), frameInput(&session, &identity));
     defer acquired.deinit(std.testing.allocator);
     const identity_request = try expectRequestCredentials(
-        try coordinator.dispatch(&ports, &acquired, 0, null),
+        try coordinator.dispatch(&ports, &acquired, 0, null, null),
     );
     try std.testing.expectEqual(rj.session.CredentialPurpose.identity, identity_request);
 
@@ -415,7 +447,7 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
     var selected = try session.step(timestamp(3 * std.time.ns_per_s), frameInput(&session, &request));
     defer selected.deinit(std.testing.allocator);
     const tls_input = try expectSessionInput(
-        try coordinator.dispatch(&ports, &selected, 0, credentials),
+        try coordinator.dispatch(&ports, &selected, 0, credentials, null),
     );
     try std.testing.expectEqual(rj.session.TunnelOperation.process_server_tls, fake.tls_operations[0]);
     try std.testing.expectEqual(selected.actions[0].tunnel_input.bytes.len, fake.last_tls_input_len);
@@ -430,17 +462,17 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
     try std.testing.expectEqual(@as(usize, 2), identity_batch.actions.len);
     try std.testing.expectEqual(
         coordinator.Result.handled,
-        try coordinator.dispatch(&ports, &identity_batch, 0, credentials),
+        try coordinator.dispatch(&ports, &identity_batch, 0, credentials, null),
     );
     const peap_identity = try expectRequestCredentials(
-        try coordinator.dispatch(&ports, &identity_batch, 1, credentials),
+        try coordinator.dispatch(&ports, &identity_batch, 1, credentials, null),
     );
     try std.testing.expectEqual(rj.session.CredentialPurpose.peap_identity, peap_identity);
 
     var protected_identity = try session.step(timestamp(5 * std.time.ns_per_s), .{ .credentials = credentials });
     defer protected_identity.deinit(std.testing.allocator);
     _ = try expectSessionInput(
-        try coordinator.dispatch(&ports, &protected_identity, 0, credentials),
+        try coordinator.dispatch(&ports, &protected_identity, 0, credentials, null),
     );
     try std.testing.expectEqual(protected_identity.actions[0].tunnel_input.bytes.len, fake.last_tls_input_len);
     try std.testing.expectEqualSlices(
@@ -463,14 +495,14 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
     try std.testing.expectEqual(@as(usize, 2), challenge_batch.actions.len);
     try std.testing.expectEqual(
         coordinator.Result.handled,
-        try coordinator.dispatch(&ports, &challenge_batch, 0, credentials),
+        try coordinator.dispatch(&ports, &challenge_batch, 0, credentials, null),
     );
     try std.testing.expectError(
         error.CredentialsRequired,
-        coordinator.dispatch(&ports, &challenge_batch, 1, null),
+        coordinator.dispatch(&ports, &challenge_batch, 1, null, null),
     );
     const mschap_input = try expectSessionInput(
-        try coordinator.dispatch(&ports, &challenge_batch, 1, credentials),
+        try coordinator.dispatch(&ports, &challenge_batch, 1, credentials, null),
     );
     try std.testing.expectEqualSlices(u8, &.{ 1, 0x11 }, fake.mschap_challenge[0..fake.mschap_challenge_len]);
     try std.testing.expectEqual(@as(usize, 1), fake.mschap_authenticate_calls);
@@ -480,7 +512,7 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
     var mschap_response = try session.step(timestamp(7 * std.time.ns_per_s), mschap_input);
     defer mschap_response.deinit(std.testing.allocator);
     _ = try expectSessionInput(
-        try coordinator.dispatch(&ports, &mschap_response, 0, credentials),
+        try coordinator.dispatch(&ports, &mschap_response, 0, credentials, null),
     );
     try std.testing.expectEqual(mschap_response.actions[0].tunnel_input.bytes.len, fake.last_tls_input_len);
     try std.testing.expectEqualSlices(
@@ -502,10 +534,10 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
     defer success_batch.deinit(std.testing.allocator);
     try std.testing.expectEqual(
         coordinator.Result.handled,
-        try coordinator.dispatch(&ports, &success_batch, 0, credentials),
+        try coordinator.dispatch(&ports, &success_batch, 0, credentials, null),
     );
     const verified_input = try expectSessionInput(
-        try coordinator.dispatch(&ports, &success_batch, 1, credentials),
+        try coordinator.dispatch(&ports, &success_batch, 1, credentials, null),
     );
     try std.testing.expectEqual(@as(usize, 1), fake.mschap_verify_calls);
     try std.testing.expectEqual(
@@ -533,14 +565,14 @@ test "PEAP session collaborates with TLS and MSCHAPv2 adapters" {
     var verified = try session.step(timestamp(9 * std.time.ns_per_s), verified_input);
     defer verified.deinit(std.testing.allocator);
     _ = try expectSessionInput(
-        try coordinator.dispatch(&ports, &verified, 0, credentials),
+        try coordinator.dispatch(&ports, &verified, 0, credentials, null),
     );
 
     const terminal = terminalSuccess(0x17);
     var waiting = try session.step(timestamp(10 * std.time.ns_per_s), frameInput(&session, &terminal));
     defer waiting.deinit(std.testing.allocator);
     const dhcp_input = try expectSessionInput(
-        try coordinator.dispatch(&ports, &waiting, 0, credentials),
+        try coordinator.dispatch(&ports, &waiting, 0, credentials, null),
     );
     try std.testing.expectEqual(rj.session.ExternalResult.dhcp_lease, std.meta.activeTag(dhcp_input.external_result.result));
     try std.testing.expectEqual(@as(usize, 4), fake.tls_operation_count);
@@ -573,7 +605,7 @@ test "adapter failures and cancellation remain distinguishable" {
     defer started.deinit(std.testing.allocator);
     try std.testing.expectError(
         error.SendFailed,
-        coordinator.dispatch(&ports, &started, 0, null),
+        coordinator.dispatch(&ports, &started, 0, null, null),
     );
 
     fake.send_error = null;
@@ -594,7 +626,7 @@ test "adapter failures and cancellation remain distinguishable" {
     );
 
     fake.receive_error = error.ReceiveFailed;
-    try std.testing.expectError(error.ReceiveFailed, ports.ethernet.tryReceive());
+    try std.testing.expectError(error.ReceiveFailed, ports.ethernet.tryReceive(null));
 
     fake.network_error = error.LeaseUnavailable;
     try std.testing.expectError(
@@ -655,6 +687,6 @@ test "dispatch rejects an action outside its outcome" {
 
     try std.testing.expectError(
         error.ActionOutOfRange,
-        coordinator.dispatch(&ports, &outcome, actions.len, null),
+        coordinator.dispatch(&ports, &outcome, actions.len, null, null),
     );
 }
