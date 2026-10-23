@@ -77,7 +77,7 @@ Zig 目标。首个真实部署验收环境是 Padavan 路由器；首版只承�
 
 ### M1：依赖集成与平台缝
 
-- 状态：待实施
+- 状态：已实施（e248a46）
 - 目标：锁定兼容的 `rj-connect.zig` 与 `zig-clap`，建立原始 Ethernet、系统网络状态、
   TLS、MSCHAPv2、时钟和信号的 adapter 边界及其协作测试。
 

@@ -6,7 +6,7 @@
     .dependencies = .{
         .rj_connect = .{
             .url = "git+https://github.com/Jason-skd/rj-connect.zig.git#v.0.1.0",
-            .hash = "rj_connect-0.1.0-qvPevBE4CgBMmTFJ8q0UWziUBoolUSHxUfrG1tMznD0m",
+            .hash = "rj_connect-0.1.0-qvPevMZUCgCsq0CtiWyGqiIyrZ4OYGcUmLSY0FhHEtMz",
         },
         .clap = .{
             // Tag 0.12.0 uses syntax rejected by Zig 0.18; pin a compatible upstream commit.

@@ -1,3 +1,26 @@
+## e248a46
+
+### Added
+
+- 实施 M1：建立原始 Ethernet、系统网络状态、TLS、MSCHAPv2、时钟和信号的系统端口，以及
+  `rj-connect` Session 动作到这些端口的桥接。
+- 使用真实协议 Session 覆盖 EAP-MD5、PEAPv0 / EAP-MSCHAPv2、DHCP、取消、stale generation、
+  adapter 错误传播和直接通信生命周期动作的协作测试。
+
+### Changed
+
+- 依赖固定到包含 `LICENSE` 的 `rj-connect.zig` `v.0.1.0` tag 和 `zig-clap` 的可编译上游
+  提交；`zig-clap` 的 `0.12.0` tag 不兼容当前 Zig 0.18。
+
+### Usage
+
+- `zig build test` 现在验证依赖解析、端口契约和 adapter 协作，但仍没有可运行的认证命令。
+
+### Limits
+
+- 尚未实现具体平台的原始 Ethernet、DHCP 读取、TLS、MSCHAPv2、时钟和信号 adapter。
+- 离线协作测试不证明真实校园网认证或 Padavan 部署已经通过。
+
 ## 01822e6
 
 ### Added
