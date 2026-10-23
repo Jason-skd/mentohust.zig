@@ -1,0 +1,73 @@
+//! Maps deterministic session actions to system capabilities.
+
+const platform = @import("platform.zig");
+const rj = @import("rj-connect");
+
+pub const Error = platform.Ethernet.Error ||
+    platform.NetworkState.Error ||
+    platform.Tls.Error ||
+    platform.Mschapv2.Error ||
+    error{CredentialsRequired};
+
+pub const Result = union(enum) {
+    handled,
+    session_input: rj.session.Input,
+    request_credentials: rj.session.CredentialPurpose,
+    direct_auth_result: rj.session.DirectAuthResult,
+    reauth_required,
+};
+
+pub fn dispatch(
+    ports: *const platform.Ports,
+    generation: rj.session.Generation,
+    action: rj.session.Action,
+    credentials: ?rj.session.Credentials,
+) Error!Result {
+    return switch (action) {
+        .send_frame => |frame| blk: {
+            try ports.ethernet.send(frame);
+            break :blk .handled;
+        },
+        .request_credentials => |purpose| .{ .request_credentials = purpose },
+        .poll_dhcp => .{ .session_input = externalResultInput(
+            generation,
+            .{ .dhcp_lease = try ports.network.readDhcpLease() },
+        ) },
+        .tunnel_input => |input| .{ .session_input = .{ .tunnel_output = .{
+            .generation = generation,
+            .output = try ports.tls.process(input.operation, input.bytes),
+        } } },
+        .authenticate_mschapv2 => |challenge| .{ .session_input = externalResultInput(
+            generation,
+            .{ .mschapv2_response = .{
+                .credentials = credentials orelse return error.CredentialsRequired,
+                .response_data = try ports.mschapv2.authenticate(
+                    challenge.request_data,
+                    credentials orelse return error.CredentialsRequired,
+                ),
+            } },
+        ) },
+        .verify_mschapv2 => |challenge| .{ .session_input = externalResultInput(
+            generation,
+            .{ .mschapv2_success = .{
+                .verified = try ports.mschapv2.verify(
+                    challenge.request_data,
+                    credentials orelse return error.CredentialsRequired,
+                ),
+                .response_data = &.{},
+            } },
+        ) },
+        .direct_auth_result => |result| .{ .direct_auth_result = result },
+        .reauth_required => .reauth_required,
+    };
+}
+
+fn externalResultInput(
+    generation: rj.session.Generation,
+    result: rj.session.ExternalResult,
+) rj.session.Input {
+    return .{ .external_result = .{
+        .generation = generation,
+        .result = result,
+    } };
+}
