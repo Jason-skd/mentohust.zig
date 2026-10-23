@@ -3,10 +3,13 @@
 
 pub const coordinator = @import("coordinator.zig");
 pub const platform = @import("platform.zig");
+pub const config = @import("config.zig");
 
 test {
     _ = coordinator;
     _ = platform;
+    _ = config;
     _ = @import("dependencies_test.zig");
     _ = @import("coordinator_test.zig");
+    _ = @import("config_test.zig");
 }
