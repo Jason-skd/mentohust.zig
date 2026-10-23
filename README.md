@@ -4,8 +4,9 @@
 [rj-connect.zig](https://github.com/Jason-skd/rj-connect.zig) 的确定性协议引擎，
 将协议动作连接到目标系统的网络、时钟和认证依赖，并作为长期运行的前台进程维持在线状态。
 
-> 当前仓库已实施 M1 的依赖集成与平台端口，尚未实现认证 CLI。本文描述 `v0.1.0` 的产品边界
-> 与验收目标，不代表这些能力已经可用。
+> 当前仓库已实施 M1 的依赖集成与平台端口，以及 M2 的 CLI、配置和长期运行生命周期。真实平台
+> adapter 与认证链路仍留待 M3，因此有效配置目前会以 `platform_adapter_unavailable` 退出。
+> 本文描述 `v0.1.0` 的产品边界与验收目标，不代表这些能力已经可用。
 
 ## 项目概览
 
@@ -39,24 +40,44 @@ client 自行完成原始 Ethernet 帧收发并读取系统已有的 DHCP 租约
 
 ## 快速开始
 
-当前只能使用 Zig 工具链验证依赖、平台端口和 adapter 协作：
+构建 CLI 并运行测试：
 
 ```sh
 zig build
 zig build test
+zig-out/bin/mentohust --help
 ```
 
-认证 CLI 尚未实现，因此现在没有可用的认证命令。`v0.1.0` 的运行时契约如下：
+M2 已实现以下配置契约：
+
+| 配置 | CLI | 环境变量 | 默认值 |
+| --- | --- | --- | --- |
+| 网卡 | `-i, --interface` | `MENTOHUST_INTERFACE` | 必需 |
+| 用户名 | `-u, --username` | `MENTOHUST_USERNAME` | 必需 |
+| 密码 | 不接受 CLI 参数 | `MENTOHUST_PASSWORD` | 必需 |
+| 认证方法 | `--method` | `MENTOHUST_METHOD` | `auto` |
+| 追加重试上限 | `--retry-limit` | `MENTOHUST_RETRY_LIMIT` | `unlimited` |
+| 首次重试延迟 | `--backoff-initial` | `MENTOHUST_BACKOFF_INITIAL` | `1s` |
+| 最大重试延迟 | `--backoff-max` | `MENTOHUST_BACKOFF_MAX` | `60s` |
+| 关闭总时限 | `--shutdown-timeout` | `MENTOHUST_SHUTDOWN_TIMEOUT` | `5s` |
+
+非密码配置按 CLI、环境变量、默认值的顺序解析；必需值缺失时可从交互终端补齐。密码接受
+环境变量或关闭回显的终端提示。无终端且缺少必需值时，进程直接失败。
+
+`v0.1.0` 的运行时契约如下：
 
 - 必须显式指定网络接口；缺少接口时不会猜测。
-- 用户名等非密码配置按 CLI、环境变量、默认值的顺序解析，缺少必需值时可交互补齐。
 - 密码不接受 CLI 明文参数，只从环境变量或关闭回显的终端提示读取。
 - 凭据不持久化、不写日志；同一次故障恢复期间复用进程内已读取的凭据。
 - 无终端启动且缺少必需凭据时，程序给出可诊断错误并以非零状态退出。
 - 收到 `SIGINT` 或 `SIGTERM` 后，在协议允许时只发送一次 Logoff，并在有限时间内完成发送与清理后退出。
 - 人类可读状态写入 stderr，覆盖认证、掉线、重试、重认证和最终退出类别。
 
-CLI 参数和环境变量名称会随实现确定；密码安全边界和配置优先级已经固定。
+退出状态：`0` 正常结束，`2` 配置或输入错误，`3` 认证拒绝，`4` 暂时失败预算耗尽，
+`5` 安全或平台依赖失败，`6` 内部错误，`130`/`143` 分别表示 `SIGINT`/`SIGTERM`。
+
+M2 的 `mentohust` 可执行文件支持 help、version、配置解析、凭据采集和失败分类。真实认证尚未
+接入，因此不能把当前可执行文件部署为可用的校园网 client。
 
 ## 开发验证
 
