@@ -49,20 +49,8 @@ pub const TerminalPrompt = struct {
         const restore_echo = if (kind == .secret) try disableEcho(self.input) else null;
         defer if (restore_echo) |termios| restoreEcho(self.input, termios);
 
-        var reader_buffer: [config.max_prompt_bytes]u8 = undefined;
-        defer std.crypto.secureZero(u8, &reader_buffer);
-        var reader = self.input.readerStreaming(self.io, &reader_buffer);
-        const line_result = reader.interface.takeDelimiterExclusive('\n');
-        if (pendingRequest()) |signal| {
-            self.interrupted_signal = signal;
-            return error.Interrupted;
-        }
-        const line = line_result catch |err| switch (err) {
-            error.StreamTooLong => return error.TooLong,
-            else => return error.ReadFailed,
-        };
+        const line = try self.readLineInterruptible(output);
         const trimmed = std.mem.trimEnd(u8, line, "\r");
-        if (trimmed.len > output.len) return error.TooLong;
         @memcpy(output[0..trimmed.len], trimmed);
 
         if (kind == .secret) {
@@ -74,6 +62,49 @@ pub const TerminalPrompt = struct {
             return error.Interrupted;
         }
         return output[0..trimmed.len];
+    }
+
+    fn readLineInterruptible(
+        self: *TerminalPrompt,
+        output: *[config.max_prompt_bytes]u8,
+    ) config.Prompt.Error![]const u8 {
+        const nonblocking = std.Io.File{
+            .handle = self.input.handle,
+            .flags = .{ .nonblocking = true },
+        };
+        var total: usize = 0;
+        while (true) {
+            if (pendingRequest()) |signal| {
+                self.interrupted_signal = signal;
+                std.crypto.secureZero(u8, output);
+                return error.Interrupted;
+            }
+
+            var descriptors = [_]std.posix.pollfd{.{
+                .fd = self.input.handle,
+                .events = std.posix.POLL.IN | std.posix.POLL.ERR,
+                .revents = 0,
+            }};
+            _ = std.posix.poll(&descriptors, 10) catch return error.ReadFailed;
+            if (descriptors[0].revents & std.posix.POLL.ERR != 0) return error.ReadFailed;
+            if (descriptors[0].revents & std.posix.POLL.IN == 0) continue;
+
+            var buffers = [_][]u8{output[total..]};
+            const count = nonblocking.readStreaming(self.io, &buffers) catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return error.ReadFailed,
+            };
+            total += count;
+            if (std.mem.indexOfScalar(u8, output[0..total], '\n')) |end| {
+                if (pendingRequest()) |signal| {
+                    self.interrupted_signal = signal;
+                    std.crypto.secureZero(u8, output);
+                    return error.Interrupted;
+                }
+                return output[0..end];
+            }
+            if (total == output.len) return error.TooLong;
+        }
     }
 
     const vtable: config.Prompt.VTable = .{ .read = read };
