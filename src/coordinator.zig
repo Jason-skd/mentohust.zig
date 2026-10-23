@@ -37,26 +37,26 @@ pub fn dispatch(
             .generation = generation,
             .output = try ports.tls.process(input.operation, input.bytes),
         } } },
-        .authenticate_mschapv2 => |challenge| .{ .session_input = externalResultInput(
-            generation,
-            .{ .mschapv2_response = .{
-                .credentials = credentials orelse return error.CredentialsRequired,
-                .response_data = try ports.mschapv2.authenticate(
-                    challenge.request_data,
-                    credentials orelse return error.CredentialsRequired,
-                ),
-            } },
-        ) },
-        .verify_mschapv2 => |challenge| .{ .session_input = externalResultInput(
-            generation,
-            .{ .mschapv2_success = .{
-                .verified = try ports.mschapv2.verify(
-                    challenge.request_data,
-                    credentials orelse return error.CredentialsRequired,
-                ),
-                .response_data = &.{},
-            } },
-        ) },
+        .authenticate_mschapv2 => |challenge| blk: {
+            const value = credentials orelse return error.CredentialsRequired;
+            break :blk .{ .session_input = externalResultInput(
+                generation,
+                .{ .mschapv2_response = .{
+                    .credentials = value,
+                    .response_data = try ports.mschapv2.authenticate(challenge.request_data, value),
+                } },
+            ) };
+        },
+        .verify_mschapv2 => |challenge| blk: {
+            const value = credentials orelse return error.CredentialsRequired;
+            break :blk .{ .session_input = externalResultInput(
+                generation,
+                .{ .mschapv2_success = .{
+                    .verified = try ports.mschapv2.verify(challenge.request_data, value),
+                    .response_data = challenge.request_data,
+                } },
+            ) };
+        },
         .direct_auth_result => |result| .{ .direct_auth_result = result },
         .reauth_required => .reauth_required,
     };

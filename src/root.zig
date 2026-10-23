@@ -8,4 +8,5 @@ test {
     _ = coordinator;
     _ = platform;
     _ = @import("dependencies_test.zig");
+    _ = @import("coordinator_test.zig");
 }
