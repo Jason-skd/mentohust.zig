@@ -7,8 +7,17 @@ pub const Error = platform.Ethernet.Error ||
     platform.NetworkState.Error ||
     platform.Tls.Error ||
     platform.Mschapv2.Error ||
-    error{CredentialsRequired};
+    error{
+        ActionOutOfRange,
+        CredentialsRequired,
+    };
 
+/// Borrowed coordinator output.
+///
+/// `session_input` and `direct_auth_result` borrow from `Outcome.actions` and
+/// the credentials passed to `dispatch`. Adapter-produced slices are
+/// additionally valid only until that adapter's next call. Consume either case
+/// before those borrows end and before reusing the originating adapter.
 pub const Result = union(enum) {
     handled,
     session_input: rj.session.Input,
@@ -17,12 +26,19 @@ pub const Result = union(enum) {
     reauth_required,
 };
 
+/// Maps one action from `outcome` to a system capability.
+///
+/// Generation and action ownership are both taken from `outcome`, so an action
+/// cannot be paired with an unrelated authentication attempt.
 pub fn dispatch(
     ports: *const platform.Ports,
-    generation: rj.session.Generation,
-    action: rj.session.Action,
+    outcome: *const rj.session.Outcome,
+    action_index: usize,
     credentials: ?rj.session.Credentials,
 ) Error!Result {
+    if (action_index >= outcome.actions.len) return error.ActionOutOfRange;
+    const action = outcome.actions[action_index];
+    const generation = outcome.generation;
     return switch (action) {
         .send_frame => |frame| blk: {
             try ports.ethernet.send(frame);
