@@ -66,7 +66,8 @@ Zig 目标。首个真实部署验收环境是 Padavan 路由器；首版只承�
 - CLI 可部署到运行 Padavan 的验收机；真实认证成功，并能通过该路由器正常访问互联网。
 - 发布说明记录验收机的 SoC、CPU 架构、内核、固件、认证路径和已测校园网环境。
 - 未实测的认证路径、平台和校园网部署明确列为兼容边界，不写成已验证能力。
-- `zig fmt --check build.zig src` 和 `zig build test` 通过，文档入口与依赖链接有效。
+- `zig fmt --check build.zig build.zig.zon src`、`zig build` 和 `zig build test` 通过，
+  文档入口与依赖链接有效。
 
 ## 里程碑
 
@@ -77,7 +78,7 @@ Zig 目标。首个真实部署验收环境是 Padavan 路由器；首版只承�
 
 ### M1：依赖集成与平台缝
 
-- 状态：已实施（e248a46）
+- 状态：已实施（90067a7）
 - 目标：锁定兼容的 `rj-connect.zig` 与 `zig-clap`，建立原始 Ethernet、系统网络状态、
   TLS、MSCHAPv2、时钟和信号的 adapter 边界及其协作测试。
 

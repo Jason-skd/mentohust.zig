@@ -1,3 +1,24 @@
+## 90067a7
+
+### Changed
+
+- 默认 `zig build` 编译 M1 模块；尚未实现的模板 CLI 入口推迟到 M2 引入。
+- 应用模块和包身份统一使用 `mentohust` 名称。
+- `coordinator.dispatch` 从产生动作的 `Outcome` 取得 generation 和 action，并拒绝越界动作。
+- MSCHAPv2 验证 adapter 返回验证结论和客户端成功响应载荷，不再回显服务器请求数据。
+
+### Tests
+
+- 协作测试断言实际发送帧、TLS 输入、MSCHAPv2 challenge 和凭据，以及各系统端口的错误身份。
+
+### Usage
+
+- `zig build` 验证模块编译；`zig build test` 验证依赖、端口契约和 adapter 协作。
+
+### Limits
+
+- 仍未实现认证 CLI 和具体平台 adapter；离线测试不证明真实校园网认证或 Padavan 部署已经通过。
+
 ## e248a46
 
 ### Added

@@ -42,6 +42,7 @@ client 自行完成原始 Ethernet 帧收发并读取系统已有的 DHCP 租约
 当前只能使用 Zig 工具链验证依赖、平台端口和 adapter 协作：
 
 ```sh
+zig build
 zig build test
 ```
 
@@ -62,7 +63,8 @@ CLI 参数和环境变量名称会随实现确定；密码安全边界和配置�
 提交前执行：
 
 ```sh
-zig fmt --check build.zig src
+zig fmt --check build.zig build.zig.zon src
+zig build
 zig build test
 ```
 
