@@ -153,11 +153,17 @@ pub const Clock = struct {
 };
 
 pub const Stop = struct {
+    //! Signal adapters must interrupt `Clock.waitUntil` when a request arrives,
+    //! and block-bounded adapters must finish or cancel within lifecycle deadlines.
+
     context: *anyopaque,
     vtable: *const VTable,
 
     pub const Error = error{SignalWaitFailed};
-    pub const Request = enum { terminate };
+    pub const Request = enum {
+        interrupt,
+        terminate,
+    };
 
     pub const VTable = struct {
         tryNext: *const fn (context: *anyopaque) Error!?Request,
