@@ -1,4 +1,24 @@
-## 3c7fbc9
+## Unreleased
+
+### Changed
+
+- `rj-connect` 依赖从 `v.0.1.0` 固定到 `v.0.1.1`，并记录 Zig 包 hash 以保持可复现构建。
+- 同步 v0.1.1 的破坏性公开 API：Session 初始化改为注入 `Facts` 与 `Credentials`，生命周期只处理
+  `send_frame`，平台端口收敛为 Ethernet、facts、时钟、信号和 watchdog。
+- CLI 不再宣称公开支持 PEAP；PEAP、Direct、SAM/SMP、TLS 和 MSCHAPv2 研究分支不属于当前
+  client 交付接口。
+
+### Fixed
+
+- 回补 M1/M2 中对旧 Session Config、外部凭据请求、DHCP/TLS/MSCHAPv2 action 和 Direct 状态的依赖，
+  使默认构建与测试重新通过。
+
+### Limits
+
+- v0.1.1 公开 profile 的目标证据来自 macOS 1.35 有线 EAP-MD5；Padavan/Linux/mipsel 兼容性仍待
+  M3/M4 真实 adapter 和服务器联调，不因离线测试或编译通过而宣称支持。
+- 生命周期模块尚未接入生产 CLI；具体平台 adapter 与真实认证链路仍待 M3。
+
 
 ### Fixed
 

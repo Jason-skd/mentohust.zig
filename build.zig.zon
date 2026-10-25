@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.18.0-dev.459+969db474f",
     .dependencies = .{
         .rj_connect = .{
-            .url = "git+https://github.com/Jason-skd/rj-connect.zig.git#v.0.1.0",
-            .hash = "rj_connect-0.1.0-qvPevMZUCgCsq0CtiWyGqiIyrZ4OYGcUmLSY0FhHEtMz",
+            .url = "git+https://github.com/Jason-skd/rj-connect.zig.git#v.0.1.1",
+            .hash = "rj_connect-0.1.1-qvPevCskEQBgXMKwV2KhP9xBvgcE3Z5Hi12uAn5Uw9_g",
         },
         .clap = .{
             // Tag 0.12.0 uses syntax rejected by Zig 0.18; pin a compatible upstream commit.
