@@ -2,42 +2,33 @@
 
 一个使用 Zig 编写的锐捷校园网认证 client。项目复用
 [rj-connect.zig](https://github.com/Jason-skd/rj-connect.zig) 的确定性协议引擎，
-将协议动作连接到目标系统的网络、时钟和认证依赖，并作为长期运行的前台进程维持在线状态。
+将协议动作连接到目标系统的网络、时钟、运行事实和生命周期，并作为长期运行的前台进程维持在线状态。
 
-> 当前仓库已实施 M1 的依赖集成与平台端口，以及 M2 的 CLI、配置和平台无关生命周期模块。
-> 生命周期尚未接入生产 CLI，真实平台 adapter 与认证链路仍留待 M3，因此有效配置目前会以
-> `platform_adapter_unavailable` 退出。本文描述 `v0.1.0` 的产品边界与验收目标，不代表
-> 这些能力已经可用。
+> 当前仓库已完成 M1/M2 针对 `rj-connect v0.1.1` 的 API 收敛迁移；生命周期尚未接入生产 CLI，
+> 真实平台 adapter 与认证链路仍留待 M3，因此有效配置目前会以 `platform_adapter_unavailable` 退出。
 
 ## 项目概览
 
-`v0.1.0` 的目标交付物是一个 CLI，而不是公共库 API。它支持 EAP-MD5 和
-PEAPv0 / EAP-MSCHAPv2 两条认证路径，持续处理心跳和重认证请求。默认无限重试暂时性失败；
-用户可以限制每次掉线后追加的认证尝试次数。凭据拒绝、配置错误和证书校验失败等不可恢复失败
-直接终止进程。
+当前依赖的公开 `Session` 只覆盖目标 macOS 1.35 有线 EAP-MD5 profile。它负责协议算法、
+私有字段构造、编号、状态转移、校验和终端通知；PEAP、Direct、SAM/SMP 与旧私有分支不属于
+当前公开 client 交付路径。默认无限重试暂时性失败；用户可以限制每次掉线后追加的认证尝试次数。
 
 项目把职责拆成以下边界：
 
 | 边界 | 职责 |
 | --- | --- |
-| `rj-connect.zig` | 报文编解码、认证状态机、会话动作、Deadline 和协议错误 |
-| `mentohust.zig` | CLI、运行生命周期、重试调度、日志、凭据采集和系统适配 |
-| 系统网络管理组件 | DHCP 租约、IP、路由和 DNS 配置 |
-| 成熟 TLS / 密码学依赖 | TLS 记录保护、证书校验、可信 CA 和 MSCHAPv2 所需的密码学原语 |
-| 使用者 | 指定网卡、凭据、受信任服务器身份和所需部署材料 |
+| `rj-connect.zig` | 报文编解码、目标 profile 算法、认证状态机、会话动作、Deadline 和协议错误 |
+| `mentohust.zig` | CLI、运行生命周期、重试调度、日志、平台能力注入和部署装配 |
+| 系统适配层 | 原始 Ethernet、时钟、信号、watchdog，以及读取接口事实和 DHCP 租约 |
+| 系统网络管理组件 | DHCP、IP、路由和 DNS 配置 |
+| 使用者 | 指定网卡、凭据、服务名、目标部署所需运行事实和外部服务管理器 |
 
 协议行为以锁定版本的 `rj-connect.zig` 契约为准。产品范围和验收边界以本仓库的
-[ROADMAP.md](ROADMAP.md) 为准；该依赖的 README 和 ROADMAP 明确把网络 I/O、时钟、TLS、
-证书验证、MSCHAPv2 和系统适配留给调用方。
+[ROADMAP.md](ROADMAP.md) 为准；网络 I/O、时钟、系统适配和部署差异仍由 client 提供。
 
-client 自行完成原始 Ethernet 帧收发并读取系统已有的 DHCP 租约，但不配置 IP、路由或 DNS。
-在 Linux 上，这通常需要为运行用户授予 `CAP_NET_RAW`；目标系统也可以使用其他能力模型，
-但必须允许访问所选网络接口。进程以前台方式运行，由 systemd、Padavan 的进程管理组件或
-其他外部服务管理器负责启动和重启。
-
-跨平台目标是保持协议协调、生命周期和配置逻辑与系统适配层分离。只要目标平台提供 Zig
-支持、原始 Ethernet、定时与信号、系统网络状态、TLS 和所需密码学能力，就可以移植。型号与
-固件不是产品契约。
+client 向协议引擎注入 `Facts` 与 `Credentials`，并负责提供 Ethernet、时钟、信号和 watchdog。
+`Facts` 包含源 MAC、服务名、磁盘序列号、IPv6 槽、IPv4 租约、备用 DNS 文本和 OS 位宽；
+client 如何在具体平台取得或组织这些值不属于协议引擎职责。
 
 ## 快速开始
 
@@ -56,7 +47,7 @@ M2 已实现以下配置契约：
 | 网卡 | `-i, --interface` | `MENTOHUST_INTERFACE` | 必需 |
 | 用户名 | `-u, --username` | `MENTOHUST_USERNAME` | 必需 |
 | 密码 | 不接受 CLI 参数 | `MENTOHUST_PASSWORD` | 必需 |
-| 认证方法 | `--method` | `MENTOHUST_METHOD` | `auto` |
+| 认证方法 | `--method` | `MENTOHUST_METHOD` | `auto`，当前公开 profile 为 EAP-MD5 |
 | 追加重试上限 | `--retry-limit` | `MENTOHUST_RETRY_LIMIT` | `unlimited` |
 | 首次重试延迟 | `--backoff-initial` | `MENTOHUST_BACKOFF_INITIAL` | `1s` |
 | 最大重试延迟 | `--backoff-max` | `MENTOHUST_BACKOFF_MAX` | `60s` |
@@ -65,25 +56,22 @@ M2 已实现以下配置契约：
 非密码配置按 CLI、环境变量、默认值的顺序解析；必需值缺失时可从交互终端补齐。密码接受
 环境变量或关闭回显的终端提示。无终端且缺少必需值时，进程直接失败。
 
-`v0.1.0` 的运行时契约如下：
+运行时约束如下：
 
 - 必须显式指定网络接口；缺少接口时不会猜测。
 - 密码不接受 CLI 明文参数，只从环境变量或关闭回显的终端提示读取。
-- 凭据不持久化、不写日志；读取后会清除进程环境中的密码副本，同一次故障恢复期间复用进程内
-  已读取的凭据。
-- 无终端启动且缺少必需凭据时，程序给出可诊断错误并以非零状态退出。
+- 凭据不持久化、不写日志；读取后会清除进程环境中的密码副本。
+- client 不配置 IP、路由或 DNS；这些由系统网络管理组件负责。
 - 收到 `SIGINT` 或 `SIGTERM` 后，在协议允许时只发送一次 Logoff；日志、取消、发送和清理共享
-  一个硬总时限。超过时限后仍以对应信号状态退出。
-- 密码提示期间收到终止信号时恢复终端回显、清除提示缓冲并按信号状态退出。
-- 人类可读状态写入 stderr，覆盖认证、掉线、重试、重认证和最终退出类别。
+  一个硬总时限。
+- 人类可读状态写入 stderr，覆盖认证、掉线、重试和最终退出类别。
 
 退出状态：`0` 正常结束，`2` 配置或输入错误，`3` 认证拒绝，`4` 暂时失败预算耗尽，
-`5` 安全、终端 I/O 或平台能力失败，`6` 内部错误（包括日志和内存故障），
-`130`/`143` 分别表示 `SIGINT`/`SIGTERM`，包括关闭清理超时。
+`5` 安全、终端 I/O 或平台能力失败，`6` 内部错误，`130`/`143` 分别表示 `SIGINT`/`SIGTERM`。
 
-M2 的 `mentohust` 可执行文件支持 help、version、配置解析、凭据采集和失败分类；生命周期模块
-已单独覆盖重试、重认证、失败终止和信号关闭。真实认证与生产 adapter 尚未接入，因此不能把
-当前可执行文件部署为可用的校园网 client。
+真实认证与生产 adapter 尚未接入，因此不能把当前可执行文件部署为可用的校园网 client。
+Padavan 仍是本仓库的部署目标，但 `rj-connect v0.1.1` 的公开 profile 只声明目标 macOS 1.35；
+Padavan 兼容性必须在 M3/M4 通过真实联调后再声明。
 
 ## 开发验证
 
@@ -95,20 +83,12 @@ zig build
 zig build test
 ```
 
-开发阶段至少需要覆盖两条认证路径的协议与 adapter 协作、凭据优先级、无终端缺凭据、暂时性失败
-重试、重试预算耗尽、错误凭据、证书校验拒绝、重认证、掉线和有界优雅退出。测试通过的离线语义
-不等于真实校园网兼容。
-
-`v0.1.0` 的正式构建验收平台是开发机 macOS 和 Linux/mipsel（Padavan 验收机所在架构）。
-Windows 当前不在支持矩阵内；其他平台需要独立实现 adapter 并通过相应验证后才能声明支持。
-
-`v0.1.0` 的发布验收是在开发机完成功能与自动化验证后，将 CLI 部署到运行 Padavan 的验收机，
-确认真实认证成功并能正常上网。当前验收机为 MediaTek MT7621 SoC、MIPS 1004Kc CPU 和 Linux
-3.4.113 内核；该环境只证明本次实测配置，不证明其他型号或其他校园网已经兼容。
+当前离线测试覆盖 v0.1.1 的 facts/credentials 初始化、EAP-MD5 start 动作、Ethernet 协作、
+重试退避、错误分类和有界信号关闭。测试通过不等于真实校园网兼容。
 
 ## 文档索引
 
 - [ROADMAP.md](ROADMAP.md)：成品目标、范围、依赖边界、里程碑与发布验收。
-- [CHANGELOG.md](CHANGELOG.md)：当前的文档基线、产品边界和已知限制。
+- [CHANGELOG.md](CHANGELOG.md)：依赖迁移、行为变化和已知限制。
 - [GLOSSARY.md](GLOSSARY.md)：项目运行生命周期、兼容承诺和配置安全术语。
 - [rj-connect.zig](https://github.com/Jason-skd/rj-connect.zig)：认证协议引擎与协议研究资料的权威来源。
