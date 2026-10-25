@@ -23,6 +23,8 @@ pub const Ethernet = struct {
 
     pub const VTable = struct {
         send: *const fn (context: *anyopaque, frame: []const u8, deadline: Deadline) Error!void,
+        /// Nonblocking probe. The borrowed frame remains valid until the next
+        /// Ethernet call; null means no queued frame. Blocking belongs to Wait.
         tryReceive: *const fn (context: *anyopaque, deadline: Deadline) Error!?[]const u8,
     };
 
@@ -61,20 +63,41 @@ pub const Clock = struct {
 
     pub const Error = error{
         ClockFailed,
-        Interrupted,
     };
 
     pub const VTable = struct {
         now: *const fn (context: *anyopaque) Error!Timestamp,
-        waitUntil: *const fn (context: *anyopaque, deadline: Timestamp) Error!void,
     };
 
     pub fn now(self: Clock) Error!Timestamp {
         return self.vtable.now(self.context);
     }
+};
 
-    pub fn waitUntil(self: Clock, deadline: Timestamp) Error!void {
-        return self.vtable.waitUntil(self.context, deadline);
+pub const Wait = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const Error = error{WaitFailed};
+    pub const Options = struct {
+        /// Absolute time in the same monotonic domain as Clock.now. An expired
+        /// deadline returns immediately; null waits indefinitely for readiness.
+        deadline: Deadline,
+        /// False during retry backoff: queued frames must not cause busy wakes.
+        receive: bool,
+    };
+
+    pub const VTable = struct {
+        /// Blocks until Ethernet is readable (when requested), a stop is queued,
+        /// or the absolute deadline is reached. Null means no timer, not polling.
+        /// A queued signal must wake this call even if queued before it starts;
+        /// waiting never consumes the signal or frame. EINTR and spurious wakes
+        /// return normally so the caller rechecks readiness and the same deadline.
+        wait: *const fn (context: *anyopaque, options: Options) Error!void,
+    };
+
+    pub fn wait(self: Wait, options: Options) Error!void {
+        return self.vtable.wait(self.context, options);
     }
 };
 
@@ -121,6 +144,7 @@ pub const Ports = struct {
     ethernet: Ethernet,
     network: NetworkState,
     clock: Clock,
+    wait: Wait,
     stop: Stop,
     watchdog: Watchdog,
 };

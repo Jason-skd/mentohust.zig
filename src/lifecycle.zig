@@ -146,7 +146,8 @@ pub fn run(
     return termination;
 }
 
-const RunError = error{ InvalidPolicy, InvalidActionOrder, MissingFailureReason };
+const RunError = error{ InvalidPolicy, MissingFailureReason } ||
+    platform.Clock.Error || platform.Stop.Error || platform.Wait.Error;
 
 fn runInner(
     session: *rj.session.Session,
@@ -157,12 +158,14 @@ fn runInner(
     var tracker = try Tracker.init(policy);
     var online = false;
     var pending_start: ?std.Io.Timestamp = null;
-    var started_once = false;
+    var started_once = session.phase() != .idle;
+
+    if (session.phase() == .authenticated) try noteOnline(&tracker, &online, reporter);
 
     while (true) {
-        const now = ports.clock.now() catch |err| return .{ .internal_failure = err };
-        const stop = ports.stop.tryNext() catch |err| return .{ .internal_failure = err };
-        if (stop) |signal| return stopAndCleanup(session, ports, policy.shutdown_timeout, signal, reporter);
+        const now = try ports.clock.now();
+        const stop = try ports.stop.tryNext();
+        if (stop) |signal| return stopAndCleanup(session, ports, now, policy.shutdown_timeout, signal, reporter);
 
         if (!started_once and session.phase() == .idle) {
             started_once = true;
@@ -198,8 +201,41 @@ fn runInner(
                 pending_start = processed.pending_start;
                 continue;
             }
-            ports.clock.waitUntil(start_at) catch |err| return .{ .internal_failure = err };
+            try ports.wait.wait(.{ .deadline = start_at, .receive = false });
             continue;
+        }
+
+        if (session.nextDeadline()) |deadline| {
+            if (now.compare(.gte, deadline)) {
+                const outcome = session.step(now, .{ .timer = session.currentGeneration() }) catch |err| {
+                    const resolution = try handleSessionError(
+                        session,
+                        ports,
+                        now,
+                        policy.shutdown_timeout,
+                        err,
+                        &tracker,
+                        &online,
+                        reporter,
+                    );
+                    if (resolution.termination) |termination| return termination;
+                    pending_start = resolution.pending_start;
+                    continue;
+                };
+                const processed = try processStep(
+                    session,
+                    ports,
+                    policy,
+                    &tracker,
+                    &online,
+                    now,
+                    outcome,
+                    reporter,
+                );
+                if (processed.termination) |termination| return termination;
+                pending_start = processed.pending_start;
+                continue;
+            }
         }
 
         const frame = ports.ethernet.tryReceive(null) catch |err| {
@@ -251,44 +287,9 @@ fn runInner(
             continue;
         }
 
-        const protocol_deadline = session.nextDeadline();
-        const wake_at = earliest(pending_start, protocol_deadline);
-        if (wake_at) |deadline| {
-            if (now.compare(.gte, deadline)) {
-                const outcome = session.step(now, .{ .timer = session.currentGeneration() }) catch |err| {
-                    const resolution = try handleSessionError(
-                        session,
-                        ports,
-                        now,
-                        policy.shutdown_timeout,
-                        err,
-                        &tracker,
-                        &online,
-                        reporter,
-                    );
-                    if (resolution.termination) |termination| return termination;
-                    pending_start = resolution.pending_start;
-                    continue;
-                };
-                const processed = try processStep(
-                    session,
-                    ports,
-                    policy,
-                    &tracker,
-                    &online,
-                    now,
-                    outcome,
-                    reporter,
-                );
-                if (processed.termination) |termination| return termination;
-                pending_start = processed.pending_start;
-                continue;
-            }
-            ports.clock.waitUntil(deadline) catch |err| return .{ .internal_failure = err };
-            continue;
-        }
-
-        return .{ .internal_failure = error.NoProgress };
+        // Successful sessions have no protocol timer. Null means block for
+        // external readiness, not failure or a nonblocking polling interval.
+        try ports.wait.wait(.{ .deadline = session.nextDeadline(), .receive = true });
     }
 }
 
@@ -440,7 +441,7 @@ fn cancelAndDispatch(
     for (canceled.actions, 0..) |_, index| {
         _ = coordinator.dispatch(&ports, &canceled, index, deadline) catch |err| {
             reportBestEffort(reporter, .{ .shutdown_failure = err });
-            if (err == error.DeadlineExceeded) return .{ .failed = err };
+            return .{ .failed = err };
         };
     }
     return .completed;
@@ -457,6 +458,7 @@ fn cleanupFailure(
     failure: StepFailure,
     reporter: Reporter,
 ) FailureResolution {
+    var recovered_at = now;
     if (session.phase() != .idle) {
         ports.watchdog.arm(shutdown_timeout, cleanupExitCode(class, failure)) catch |err| {
             reportBestEffort(reporter, .{ .shutdown_failure = err });
@@ -468,8 +470,16 @@ fn cleanupFailure(
             .completed => {},
             .failed => |err| return .{ .termination = cleanupAbortTermination(class, failure, err) },
         }
+        recovered_at = ports.clock.now() catch |err| {
+            reportBestEffort(reporter, .{ .shutdown_failure = err });
+            return .{ .termination = cleanupAbortTermination(class, failure, err) };
+        };
+        if (recovered_at.compare(.gt, deadline)) {
+            reportBestEffort(reporter, .{ .shutdown_failure = error.ShutdownTimedOut });
+            return .{ .termination = cleanupAbortTermination(class, failure, error.ShutdownTimedOut) };
+        }
     }
-    return resolveAfterCleanup(now, tracker, online, class, failure, reporter);
+    return resolveAfterCleanup(recovered_at, tracker, online, class, failure, reporter);
 }
 
 fn resolveAfterCleanup(
@@ -482,12 +492,12 @@ fn resolveAfterCleanup(
 ) FailureResolution {
     if (class == .transient) {
         online.* = false;
-        reportBestEffort(reporter, .disconnected);
+        reporter.write(.disconnected) catch return .{ .termination = .{ .internal_failure = error.WriteFailed } };
         const retry_at = tracker.scheduleRetry(now) orelse return .{ .termination = .{ .retry_exhausted = failure } };
-        reportBestEffort(reporter, .{ .retry_scheduled = .{
+        reporter.write(.{ .retry_scheduled = .{
             .attempt = tracker.retryAttempt(),
             .delay = now.durationTo(retry_at),
-        } });
+        } }) catch return .{ .termination = .{ .internal_failure = error.WriteFailed } };
         return .{ .pending_start = retry_at };
     }
     return .{ .termination = terminationFor(class, failure) };
@@ -523,6 +533,7 @@ fn terminateAfterInternalError(
 fn stopAndCleanup(
     session: *rj.session.Session,
     ports: platform.Ports,
+    started: std.Io.Timestamp,
     shutdown_timeout: std.Io.Duration,
     signal: platform.Stop.Request,
     reporter: Reporter,
@@ -532,13 +543,17 @@ fn stopAndCleanup(
         return .{ .signal = signal };
     };
     defer ports.watchdog.disarm();
+    const deadline = started.addDuration(shutdown_timeout);
     reportBestEffort(reporter, .{ .shutdown_started = signal });
-    const started = ports.clock.now() catch |err| {
+    const before_cancel = ports.clock.now() catch |err| {
         reportBestEffort(reporter, .{ .shutdown_failure = err });
         return .{ .signal = signal };
     };
-    const deadline = started.addDuration(shutdown_timeout);
-    switch (cancelAndDispatch(session, ports, started, deadline, reporter)) {
+    if (before_cancel.compare(.gte, deadline)) {
+        reportBestEffort(reporter, .{ .shutdown_failure = error.ShutdownTimedOut });
+        return .{ .signal = signal };
+    }
+    switch (cancelAndDispatch(session, ports, before_cancel, deadline, reporter)) {
         .completed => {},
         .failed => return .{ .signal = signal },
     }
@@ -594,12 +609,6 @@ fn terminationFor(class: FailureClass, failure: StepFailure) Termination {
         .security => .{ .security_failure = failure },
         .internal => .{ .internal_failure = failure.cause orelse error.InternalFailure },
     };
-}
-
-fn earliest(a: ?std.Io.Timestamp, b: ?std.Io.Timestamp) ?std.Io.Timestamp {
-    if (a == null) return b;
-    if (b == null) return a;
-    return if (a.?.compare(.lte, b.?)) a.? else b.?;
 }
 
 pub fn classifyFailureReason(reason: rj.session.FailureReason) FailureClass {

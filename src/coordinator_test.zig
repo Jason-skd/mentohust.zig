@@ -11,6 +11,7 @@ const Harness = struct {
             .ethernet = .{ .context = self, .vtable = &ethernet_vtable },
             .network = undefined,
             .clock = undefined,
+            .wait = undefined,
             .stop = undefined,
             .watchdog = undefined,
         };
