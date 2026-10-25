@@ -60,7 +60,7 @@
 
 ### M2：CLI 与长期运行生命周期
 
-- 状态：已实施（469a4bf）；生产 CLI 集成待 M3
+- 状态：已实施（a6afde2）；生产 CLI 集成待 M3
 - 目标：完成参数、凭据来源、目标 profile 初始化、重试预算、指数退避、日志和有界退出，并覆盖
   当前公开 profile 的失败分类。旧的动态凭据、DHCP、TLS、MSCHAPv2 和 Direct action 流程不再属于
   当前 client 生命周期。
