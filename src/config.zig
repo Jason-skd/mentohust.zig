@@ -8,7 +8,6 @@ pub const max_prompt_bytes = 512;
 pub const Method = enum {
     auto,
     md5,
-    peap,
 };
 
 pub const RetryLimit = union(enum) {
@@ -107,7 +106,7 @@ pub const Prompt = struct {
 pub const Params = clap.parseParamsComptime(
     \\-i, --interface <STR>              Network interface used for raw Ethernet.
     \\-u, --username <STR>               Authentication username.
-    \\    --method <METHOD>              Authentication method: auto, md5, or peap. Default: auto.
+    \\    --method <METHOD>              Authentication method: auto or md5. Default: auto.
     \\    --retry-limit <RETRY>          Additional attempts after each loss: N or unlimited. Default: unlimited.
     \\    --backoff-initial <DURATION>   Delay before the first retry. Default: 1s.
     \\    --backoff-max <DURATION>       Maximum retry delay. Default: 60s.

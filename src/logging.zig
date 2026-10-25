@@ -47,12 +47,6 @@ pub fn formatEvent(event: lifecycle.Event, writer: *std.Io.Writer) std.Io.Writer
             try retry.delay.format(writer);
             try writer.writeByte('\n');
         },
-        .reauthentication_required => try writer.writeAll(
-            "mentohust: info reauthentication_required\n",
-        ),
-        .direct_authentication_failed => try writer.writeAll(
-            "mentohust: error direct_authentication_failed\n",
-        ),
         .authentication_rejected => |failure| {
             try writer.writeAll("mentohust: error authentication_rejected ");
             try formatFailure(failure, writer);

@@ -1,7 +1,7 @@
-//! System capabilities consumed by the authentication coordinator.
+//! System capabilities consumed by the authentication client.
 //!
-//! Every port has an opaque context and a function table. Concrete adapters own
-//! their buffers and mappings; the coordinator only borrows bytes for one call.
+//! The protocol dependency owns authentication semantics. Concrete adapters own
+//! platform I/O and provide the runtime facts required by the selected profile.
 
 const std = @import("std");
 const rj = @import("rj-connect");
@@ -41,102 +41,17 @@ pub const NetworkState = struct {
 
     pub const Error = error{
         DeadlineExceeded,
+        FactsUnavailable,
         IoFailed,
-        LeaseInvalid,
-        LeaseUnavailable,
+        InvalidFacts,
     };
 
     pub const VTable = struct {
-        readDhcpLease: *const fn (context: *anyopaque, deadline: Deadline) Error!rj.session.DhcpLease,
+        readFacts: *const fn (context: *anyopaque, deadline: Deadline) Error!rj.session.Facts,
     };
 
-    pub fn readDhcpLease(self: NetworkState, deadline: Deadline) Error!rj.session.DhcpLease {
-        return self.vtable.readDhcpLease(self.context, deadline);
-    }
-};
-
-pub const Tls = struct {
-    context: *anyopaque,
-    vtable: *const VTable,
-
-    pub const Error = error{
-        CertificateRejected,
-        DeadlineExceeded,
-        ProtocolFailed,
-        ResourceExhausted,
-        TlsIoFailed,
-    };
-
-    pub const VTable = struct {
-        /// Returned slices remain valid until the adapter's next call.
-        process: *const fn (
-            context: *anyopaque,
-            operation: rj.session.TunnelOperation,
-            bytes: []const u8,
-            deadline: Deadline,
-        ) Error!rj.session.TunnelOutput,
-    };
-
-    pub fn process(
-        self: Tls,
-        operation: rj.session.TunnelOperation,
-        bytes: []const u8,
-        deadline: Deadline,
-    ) Error!rj.session.TunnelOutput {
-        return self.vtable.process(self.context, operation, bytes, deadline);
-    }
-};
-
-pub const Mschapv2 = struct {
-    context: *anyopaque,
-    vtable: *const VTable,
-
-    pub const Verification = struct {
-        verified: bool,
-        /// Client EAP-MSCHAPv2 success payload returned by the adapter.
-        response_data: []const u8 = &.{},
-    };
-
-    pub const Error = error{
-        ChallengeInvalid,
-        ComputationFailed,
-        DeadlineExceeded,
-        ResourceExhausted,
-        VerificationFailed,
-    };
-
-    pub const VTable = struct {
-        /// Returned slices remain valid until the adapter's next call.
-        authenticate: *const fn (
-            context: *anyopaque,
-            challenge: []const u8,
-            credentials: rj.session.Credentials,
-            deadline: Deadline,
-        ) Error![]const u8,
-        verify: *const fn (
-            context: *anyopaque,
-            challenge: []const u8,
-            credentials: rj.session.Credentials,
-            deadline: Deadline,
-        ) Error!Verification,
-    };
-
-    pub fn authenticate(
-        self: Mschapv2,
-        challenge: []const u8,
-        credentials: rj.session.Credentials,
-        deadline: Deadline,
-    ) Error![]const u8 {
-        return self.vtable.authenticate(self.context, challenge, credentials, deadline);
-    }
-
-    pub fn verify(
-        self: Mschapv2,
-        challenge: []const u8,
-        credentials: rj.session.Credentials,
-        deadline: Deadline,
-    ) Error!Verification {
-        return self.vtable.verify(self.context, challenge, credentials, deadline);
+    pub fn readFacts(self: NetworkState, deadline: Deadline) Error!rj.session.Facts {
+        return self.vtable.readFacts(self.context, deadline);
     }
 };
 
@@ -164,17 +79,13 @@ pub const Clock = struct {
 };
 
 pub const Stop = struct {
-    //! Signal adapters must interrupt `Clock.waitUntil` when a request arrives,
-    //! and block-bounded adapters must finish or cancel within lifecycle deadlines.
+    //! Signal adapters interrupt waits and report bounded shutdown requests.
 
     context: *anyopaque,
     vtable: *const VTable,
 
     pub const Error = error{SignalWaitFailed};
-    pub const Request = enum {
-        interrupt,
-        terminate,
-    };
+    pub const Request = enum { interrupt, terminate };
 
     pub const VTable = struct {
         tryNext: *const fn (context: *anyopaque) Error!?Request,
@@ -192,13 +103,8 @@ pub const Watchdog = struct {
     pub const Error = error{WatchdogFailed};
 
     pub const VTable = struct {
-        /// Arms a hard process exit after `timeout` unless this watchdog is
-        /// disarmed first. The adapter owns the native timer and exit path.
-        arm: *const fn (
-            context: *anyopaque,
-            timeout: Duration,
-            exit_code: u8,
-        ) Error!void,
+        /// Arms a hard process exit after `timeout` unless disarmed first.
+        arm: *const fn (context: *anyopaque, timeout: Duration, exit_code: u8) Error!void,
         disarm: *const fn (context: *anyopaque) void,
     };
 
@@ -214,8 +120,6 @@ pub const Watchdog = struct {
 pub const Ports = struct {
     ethernet: Ethernet,
     network: NetworkState,
-    tls: Tls,
-    mschapv2: Mschapv2,
     clock: Clock,
     stop: Stop,
     watchdog: Watchdog,
