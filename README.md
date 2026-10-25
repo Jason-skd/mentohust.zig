@@ -26,7 +26,7 @@
 协议行为以锁定版本的 `rj-connect.zig` 契约为准。产品范围和验收边界以本仓库的
 [ROADMAP.md](ROADMAP.md) 为准；网络 I/O、时钟、系统适配和部署差异仍由 client 提供。
 
-client 向协议引擎注入 `Facts` 与 `Credentials`，并负责提供 Ethernet、时钟、信号和 watchdog。
+client 向协议引擎注入 `Facts` 与 `Credentials`，并负责提供 Ethernet、时钟、事件等待、信号和 watchdog。
 `Facts` 包含源 MAC、服务名、磁盘序列号、IPv6 槽、IPv4 租约、备用 DNS 文本和 OS 位宽；
 client 如何在具体平台取得或组织这些值不属于协议引擎职责。
 
@@ -83,8 +83,9 @@ zig build
 zig build test
 ```
 
-当前离线测试覆盖 v0.1.1 的 facts/credentials 初始化、EAP-MD5 start 动作、Ethernet 协作、
-重试退避、错误分类和有界信号关闭。测试通过不等于真实校园网兼容。
+当前离线测试使用真实 EAP-MD5 Session 验证认证后持续驻留、网络帧与信号唤醒、绝对 deadline、
+掉线恢复、预算重置、日志失败清理和 watchdog 保护的有界关闭。事件等待与具体平台 adapter
+仍需在 M3 接入生产 CLI；测试通过不等于真实校园网兼容。
 
 ## 文档索引
 
