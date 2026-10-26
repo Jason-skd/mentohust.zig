@@ -60,7 +60,7 @@
 
 ### M2：CLI 与长期运行生命周期
 
-- 状态：已实施（a6afde2）；生产 CLI 集成待 M3
+- 状态：已实施（a6afde2）；生产 CLI 集成已实施
 - 目标：完成参数、凭据来源、目标 profile 初始化、重试预算、指数退避、日志和有界退出，并覆盖
   当前公开 profile 的失败分类。旧的动态凭据、DHCP、TLS、MSCHAPv2 和 Direct action 流程不再属于
   当前 client 生命周期。
@@ -69,7 +69,7 @@
 
 ### M3：真实认证链路
 
-- 状态：待实施
+- 状态：已实施；待收尾：真实服务器联调
 - 目标：实现平台 adapter 和可中断事件等待，读取接口和 `Facts`，注入凭据，驱动 v0.1.1 EAP-MD5 Session，完成
   Ethernet 收发、服务器帧处理和真实服务器联调。若目标部署需要不同算法或字段，不在 client 中
   复制协议细节，应先由 `rj-connect` 提供明确 profile 或能力边界。
@@ -84,6 +84,6 @@
 
 - `rj-connect v0.1.1` 将公开 Session 收敛为目标 macOS 1.35 EAP-MD5 profile；本仓库同步移除
   对 PEAP、Direct、SAM/SMP、TLS 和 MSCHAPv2 公开 action/adapter 的依赖。
-- 已实施的 M1/M2 需要针对该破坏性 API 变更回补；未实施的 M3/M4 改为 facts 装配、目标 profile
-  联调和部署兼容性验证，不再规划两条公开认证路径。
+- M1/M2 已完成破坏性 API 变更回补；M3/M4 采用 facts 装配、目标 profile 联调和部署兼容性验证，
+  不再规划两条公开认证路径。
 - Padavan 仍是部署目标，但不再被文档预先视为与 macOS 1.35 profile 兼容；兼容性由 M3/M4 证据决定。

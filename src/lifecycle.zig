@@ -254,6 +254,12 @@ fn runInner(
             continue;
         };
         if (frame) |bytes| {
+            refreshFacts(session, ports, now) catch |err| {
+                const resolution = try handleFactsError(session, ports, now, policy.shutdown_timeout, err, &tracker, &online, reporter);
+                if (resolution.termination) |termination| return termination;
+                pending_start = resolution.pending_start;
+                continue;
+            };
             const outcome = session.step(now, .{ .frame = .{
                 .generation = session.currentGeneration(),
                 .bytes = bytes,
@@ -309,6 +315,10 @@ fn startAttempt(
     reporter: Reporter,
 ) (RunError || Reporter.Error)!Processed {
     try reporter.write(.{ .authentication_started = .{ .retry_attempt = retry_attempt } });
+    refreshFacts(session, ports, now) catch |err| {
+        const resolution = try handleFactsError(session, ports, now, policy.shutdown_timeout, err, tracker, online, reporter);
+        return .{ .pending_start = resolution.pending_start, .termination = resolution.termination };
+    };
     const outcome = session.step(now, .start) catch |err| {
         const resolution = try handleSessionError(
             session,
@@ -383,6 +393,33 @@ fn noteOnline(tracker: *Tracker, online: *bool, reporter: Reporter) Reporter.Err
         online.* = true;
         try reporter.write(.online);
     }
+}
+
+const FactsError = platform.NetworkState.Error || rj.session.Error;
+
+fn refreshFacts(session: *rj.session.Session, ports: platform.Ports, now: platform.Timestamp) FactsError!void {
+    const fresh = try ports.network.readFacts(null);
+    var updated = try session.step(now, .{ .facts = fresh });
+    defer updated.deinit(session.allocator);
+}
+
+fn handleFactsError(
+    session: *rj.session.Session,
+    ports: platform.Ports,
+    now: platform.Timestamp,
+    shutdown_timeout: platform.Duration,
+    err: FactsError,
+    tracker: *Tracker,
+    online: *bool,
+    reporter: Reporter,
+) Reporter.Error!FailureResolution {
+    const class: FailureClass = switch (err) {
+        error.FactsUnavailable, error.IoFailed => .transient,
+        error.DeadlineExceeded => .internal,
+        else => classifySessionError(@errorCast(err)),
+    };
+    if (class == .transient) try reporter.write(.{ .transient_error = err });
+    return cleanupFailure(session, ports, now, shutdown_timeout, tracker, online, class, .{ .cause = err }, reporter);
 }
 
 fn handleSessionError(

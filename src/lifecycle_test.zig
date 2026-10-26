@@ -41,6 +41,9 @@ const Harness = struct {
     receive_buffer: [512]u8 = undefined,
     queued_frame: ?[]const u8 = null,
     receive_error: ?platform.Ethernet.Error = null,
+    facts_error: ?platform.NetworkState.Error = null,
+    facts_calls: usize = 0,
+    current_facts: rj.session.Facts = .{ .source_mac = .{ 0, 1, 2, 3, 4, 5 } },
     sent_types: [64]u8 = undefined,
     sent_at: [64]platform.Timestamp = undefined,
     send_count: usize = 0,
@@ -142,8 +145,14 @@ fn ethernetReceive(context: *anyopaque, _: platform.Deadline) platform.Ethernet.
     return frame;
 }
 
-fn networkReadFacts(_: *anyopaque, _: platform.Deadline) platform.NetworkState.Error!rj.session.Facts {
-    return .{ .source_mac = .{ 0, 1, 2, 3, 4, 5 } };
+fn networkReadFacts(context: *anyopaque, _: platform.Deadline) platform.NetworkState.Error!rj.session.Facts {
+    const fake = harness(context);
+    fake.facts_calls += 1;
+    if (fake.facts_error) |err| {
+        fake.facts_error = null;
+        return err;
+    }
+    return fake.current_facts;
 }
 
 fn clockNow(context: *anyopaque) platform.Clock.Error!platform.Timestamp {
@@ -299,6 +308,45 @@ fn initSession() !rj.session.Session {
 fn expectSignal(termination: lifecycle.Termination, signal: platform.Stop.Request) !void {
     try std.testing.expectEqual(lifecycle.Termination.signal, std.meta.activeTag(termination));
     try std.testing.expectEqual(signal, termination.signal);
+}
+
+test "facts are refreshed before start and server response" {
+    var session = try initSession();
+    defer session.deinit();
+    var fake: Harness = .{
+        .stop_immediately = false,
+        .script = &.{
+            .{ .event = .{ .eap = &identity } },
+            .{ .event = .{ .signal = .terminate } },
+        },
+        .current_facts = .{ .source_mac = .{ 0, 1, 2, 3, 4, 5 }, .lease = .{ .ip = .{ 10, 1, 2, 3 } } },
+    };
+    const termination = lifecycle.run(&session, fake.ports(), policy(), fake.reporter());
+    try expectSignal(termination, .terminate);
+    try std.testing.expectEqual(@as(usize, 2), fake.facts_calls);
+    try std.testing.expectEqual([4]u8{ 10, 1, 2, 3 }, session.facts.lease.ip);
+}
+
+test "missing facts retry with a fresh snapshot and malformed facts stop before sending" {
+    var session = try initSession();
+    defer session.deinit();
+    var fake: Harness = .{
+        .stop_immediately = false,
+        .facts_error = error.FactsUnavailable,
+        .script = &.{
+            .{ .event = .timeout },
+            .{ .event = .{ .signal = .terminate } },
+        },
+    };
+    try expectSignal(lifecycle.run(&session, fake.ports(), policy(), fake.reporter()), .terminate);
+    try std.testing.expectEqual(@as(usize, 2), fake.facts_calls);
+    try std.testing.expectEqual(@as(usize, 1), fake.countEvents(.retry_scheduled));
+    var invalid_session = try initSession();
+    defer invalid_session.deinit();
+    var invalid: Harness = .{ .stop_immediately = false, .current_facts = .{ .source_mac = .{ 0, 1, 2, 3, 4, 5 }, .os_bits = 0 } };
+    const termination = lifecycle.run(&invalid_session, invalid.ports(), policy(), invalid.reporter());
+    try std.testing.expectEqual(@as(u8, 2), termination.exitCode());
+    try std.testing.expectEqual(@as(usize, 0), invalid.send_count);
 }
 
 test "network readiness authenticates before timeout and remains online without a deadline" {

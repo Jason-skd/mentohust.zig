@@ -17,11 +17,32 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 
+    const system_bindings = b.addTranslateC(.{
+        .root_source_file = b.path("src/system.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    if (target.result.os.tag == .linux and target.result.isMuslLibC()) {
+        // The pinned translator otherwise discovers the host SDK on macOS.
+        const arch = std.zig.target.muslArchNameHeaders(target.result.cpu.arch);
+        const abi = std.zig.target.muslAbiNameHeaders(target.result.abi);
+        for ([_][]const u8{
+            b.fmt("libc/include/{s}-linux-{s}", .{ arch, abi }),
+            "libc/include/generic-musl",
+            b.fmt("libc/include/{s}-linux-any", .{std.zig.target.osArchName(&target.result)}),
+            "libc/include/any-linux-any",
+            "include",
+        }) |path| system_bindings.addSystemIncludePath(std.Build.LazyPath.zig_lib.path(b, path));
+    }
+    const system_module = system_bindings.createModule();
+
     const mod = b.addModule("mentohust", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
+            .{ .name = "system", .module = system_module },
             .{ .name = "rj-connect", .module = rj_connect.module("rj-connect") },
             .{ .name = "clap", .module = clap.module("clap") },
         },
@@ -39,8 +60,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "mentohust", .module = mod },
+                .{ .name = "rj-connect", .module = rj_connect.module("rj-connect") },
                 .{ .name = "clap", .module = clap.module("clap") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
@@ -55,9 +78,45 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+    const probe = b.addExecutable(.{
+        .name = "runtime-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/runtime_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "mentohust", .module = mod },
+                .{ .name = "system", .module = system_module },
+                .{ .name = "rj-connect", .module = rj_connect.module("rj-connect") },
+            },
+        }),
+    });
+    check_step.dependOn(&probe.step);
+    for ([_][]const u8{ "watchdog", "signal", "session", "prompt", "prompt-signal" }) |mode| {
+        const run_probe = b.addRunArtifact(probe);
+        run_probe.clearEnvironment();
+        run_probe.addArg(mode);
+        run_probe.expectExitCode(if (std.mem.eql(u8, mode, "watchdog")) 99 else 0);
+        test_step.dependOn(&run_probe.step);
+    }
+    const version_check = b.addRunArtifact(exe);
+    version_check.addArg("--version");
+    version_check.expectStdOutEqual(b.fmt("mentohust {s}\n", .{version}));
+    version_check.expectStdErrEqual("");
+    test_step.dependOn(&version_check.step);
+    const missing_interface = b.addRunArtifact(exe);
+    missing_interface.clearEnvironment();
+    missing_interface.addArgs(&.{ "--interface", "m3-missing0", "--username", "alice" });
+    missing_interface.setEnvironmentVariable("MENTOHUST_PASSWORD", "test-secret");
+    missing_interface.expectExitCode(5);
+    missing_interface.expectStdOutEqual("");
+    missing_interface.expectStdErrMatch("platform_adapter_failed reason=FactsUnavailable");
+    test_step.dependOn(&missing_interface.step);
 
     const run_step = b.step("run", "Run the authentication client");
     const run_exe = b.addRunArtifact(exe);
+    run_exe.addPassthruArgs();
     run_step.dependOn(&run_exe.step);
 }
 

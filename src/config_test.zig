@@ -69,6 +69,55 @@ fn parseArgs(
     return config.parse(allocator, &iter, environment, prompt, null);
 }
 
+fn allocationScenario(allocator: std.mem.Allocator) !void {
+    var env: EnvStub = .{ .entries = &.{
+        .{ .name = "MENTOHUST_INTERFACE", .value = "en0" },
+        .{ .name = "MENTOHUST_USERNAME", .value = "alice" },
+        .{ .name = "MENTOHUST_PASSWORD", .value = "secret" },
+    } };
+    var prompt: PromptStub = .{};
+    var action = try parseArgs(allocator, "mentohust --service-name campus --disk-serial disk1", env.environment(), prompt.prompt());
+    defer action.run.deinit();
+    try std.testing.expectEqualStrings("campus", action.run.deployment.service_name);
+}
+
+test "configuration construction cleans up every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationScenario, .{});
+}
+
+test "deployment facts honor precedence and validate before prompting for secrets" {
+    var env: EnvStub = .{ .entries = &.{
+        .{ .name = "MENTOHUST_INTERFACE", .value = "en0" },
+        .{ .name = "MENTOHUST_USERNAME", .value = "alice" },
+        .{ .name = "MENTOHUST_PASSWORD", .value = "secret" },
+        .{ .name = "MENTOHUST_SERVICE_NAME", .value = "environment" },
+        .{ .name = "MENTOHUST_DISK_SERIAL", .value = "disk-1" },
+        .{ .name = "MENTOHUST_DHCP", .value = "enabled" },
+        .{ .name = "MENTOHUST_GATEWAY", .value = "10.1.2.1" },
+        .{ .name = "MENTOHUST_DNS", .value = "10.1.2.53" },
+    } };
+    var prompt: PromptStub = .{};
+    var action = try parseArgs(std.testing.allocator, "mentohust --service-name campus --dns 1.1.1.1", env.environment(), prompt.prompt());
+    defer action.run.deinit();
+    try std.testing.expectEqualStrings("campus", action.run.deployment.service_name);
+    try std.testing.expectEqualStrings("disk-1", action.run.deployment.disk_serial);
+    try std.testing.expect(action.run.deployment.dhcp_enabled);
+    try std.testing.expectEqual([4]u8{ 10, 1, 2, 1 }, action.run.deployment.gateway);
+    try std.testing.expectEqual([4]u8{ 1, 1, 1, 1 }, action.run.deployment.dns);
+    try std.testing.expectError(error.InvalidFacts, parseArgs(std.testing.allocator, "mentohust --disk-serial abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklm", env.environment(), prompt.prompt()));
+    try std.testing.expectEqual(@as(usize, 0), prompt.kind_count);
+}
+
+test "profile password length is rejected by configuration validation" {
+    var env: EnvStub = .{ .entries = &.{
+        .{ .name = "MENTOHUST_INTERFACE", .value = "en0" },
+        .{ .name = "MENTOHUST_USERNAME", .value = "alice" },
+        .{ .name = "MENTOHUST_PASSWORD", .value = &@as([241]u8, @splat('x')) },
+    } };
+    var prompt: PromptStub = .{};
+    try std.testing.expectError(error.InvalidCredentials, parseArgs(std.testing.allocator, "mentohust", env.environment(), prompt.prompt()));
+}
+
 test "CLI overrides environment values and retains lower-precedence options" {
     var env: EnvStub = .{ .entries = &.{
         .{ .name = "MENTOHUST_INTERFACE", .value = "env0" },

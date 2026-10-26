@@ -1,23 +1,19 @@
-//! POSIX terminal prompt adapter with signal-safe echo restoration.
-
+//! POSIX terminal prompts sharing the command's owned signal source.
 const std = @import("std");
 const config = @import("config.zig");
 const platform = @import("platform.zig");
-
-var pending_signal: std.atomic.Value(u8) = .init(0);
+const Signals = @import("signals.zig").Signals;
+const c = @import("system.zig").c;
 
 pub const TerminalPrompt = struct {
     io: std.Io,
+    signals: *Signals,
     input: std.Io.File,
     output: std.Io.File,
     interrupted_signal: ?platform.Stop.Request = null,
 
-    pub fn init(io: std.Io) TerminalPrompt {
-        return .{
-            .io = io,
-            .input = .stdin(),
-            .output = .stderr(),
-        };
+    pub fn init(io: std.Io, signals: *Signals) TerminalPrompt {
+        return .{ .io = io, .signals = signals, .input = .stdin(), .output = .stderr() };
     }
 
     pub fn interface(self: *TerminalPrompt) config.Prompt {
@@ -28,126 +24,63 @@ pub const TerminalPrompt = struct {
         return self.interrupted_signal;
     }
 
-    fn read(
-        context: *anyopaque,
-        kind: config.PromptKind,
-        label: []const u8,
-        output: *[config.max_prompt_bytes]u8,
-    ) config.Prompt.Error![]const u8 {
-        const self: *TerminalPrompt = @ptrCast(@alignCast(context));
-        self.interrupted_signal = null;
-        pending_signal.store(0, .seq_cst);
-
-        if (!(self.input.isTty(self.io) catch return error.ReadFailed)) {
-            return error.NotTerminal;
-        }
-
-        const signals = installPromptSignals();
-        defer signals.restore();
-        self.output.writeStreamingAll(self.io, label) catch return error.WriteFailed;
-
-        const restore_echo = if (kind == .secret) try disableEcho(self.input) else null;
-        defer if (restore_echo) |termios| restoreEcho(self.input, termios);
-
-        const line = try self.readLineInterruptible(output);
-        const trimmed = std.mem.trimEnd(u8, line, "\r");
-        @memcpy(output[0..trimmed.len], trimmed);
-
-        if (kind == .secret) {
-            self.output.writeStreamingAll(self.io, "\n") catch return error.WriteFailed;
-        }
-        if (pendingRequest()) |signal| {
+    fn checkStop(self: *TerminalPrompt) config.Prompt.Error!void {
+        if (self.signals.tryNext() catch return error.ReadFailed) |signal| {
             self.interrupted_signal = signal;
-            std.crypto.secureZero(u8, output);
             return error.Interrupted;
         }
-        return output[0..trimmed.len];
     }
 
-    fn readLineInterruptible(
-        self: *TerminalPrompt,
-        output: *[config.max_prompt_bytes]u8,
-    ) config.Prompt.Error![]const u8 {
-        const nonblocking = std.Io.File{
-            .handle = self.input.handle,
-            .flags = .{ .nonblocking = true },
+    fn read(context: *anyopaque, kind: config.PromptKind, label: []const u8, output: *[config.max_prompt_bytes]u8) config.Prompt.Error![]const u8 {
+        const self: *TerminalPrompt = @ptrCast(@alignCast(context));
+        self.interrupted_signal = null;
+        errdefer std.crypto.secureZero(u8, output);
+        try self.checkStop();
+        if (!(self.input.isTty(self.io) catch return error.ReadFailed)) return error.NotTerminal;
+        self.output.writeStreamingAll(self.io, label) catch return error.WriteFailed;
+        const restore_echo = if (kind == .secret) try disableEcho(self.input) else null;
+        var echo_restored = false;
+        defer if (!echo_restored) {
+            if (restore_echo) |termios| restoreEcho(self.input, termios) catch {};
         };
+        const line = try self.readLineInterruptible(output);
+        const trimmed = std.mem.trimEnd(u8, line, "\r");
+        if (kind == .secret) self.output.writeStreamingAll(self.io, "\n") catch return error.WriteFailed;
+        try self.checkStop();
+        if (restore_echo) |termios| try restoreEcho(self.input, termios);
+        echo_restored = true;
+        return trimmed;
+    }
+
+    fn readLineInterruptible(self: *TerminalPrompt, output: *[config.max_prompt_bytes]u8) config.Prompt.Error![]const u8 {
         var total: usize = 0;
         while (true) {
-            if (pendingRequest()) |signal| {
-                self.interrupted_signal = signal;
-                std.crypto.secureZero(u8, output);
-                return error.Interrupted;
+            try self.checkStop();
+            self.signals.wait(self.io, self.input.handle, c.POLLIN, null) catch return error.ReadFailed;
+            try self.checkStop();
+            // The queue can wake spuriously; do not turn that into a blocking read.
+            var descriptor: c.struct_pollfd = .{ .fd = self.input.handle, .events = c.POLLIN, .revents = 0 };
+            const ready = c.poll(&descriptor, 1, 0);
+            if (ready < 0) {
+                if (std.c.errno(ready) == .INTR) continue;
+                return error.ReadFailed;
             }
-
-            var descriptors = [_]std.posix.pollfd{.{
-                .fd = self.input.handle,
-                .events = std.posix.POLL.IN | std.posix.POLL.ERR,
-                .revents = 0,
-            }};
-            _ = std.posix.poll(&descriptors, 10) catch return error.ReadFailed;
-            if (descriptors[0].revents & std.posix.POLL.ERR != 0) return error.ReadFailed;
-            if (descriptors[0].revents & std.posix.POLL.IN == 0) continue;
-
-            var buffers = [_][]u8{output[total..]};
-            const count = nonblocking.readStreaming(self.io, &buffers) catch |err| switch (err) {
-                error.WouldBlock => continue,
-                else => return error.ReadFailed,
-            };
-            total += count;
-            if (std.mem.indexOfScalar(u8, output[0..total], '\n')) |end| {
-                if (pendingRequest()) |signal| {
-                    self.interrupted_signal = signal;
-                    std.crypto.secureZero(u8, output);
-                    return error.Interrupted;
-                }
-                return output[0..end];
+            if (descriptor.revents & (c.POLLHUP | c.POLLERR | c.POLLNVAL) != 0) return error.ReadFailed;
+            if (descriptor.revents & c.POLLIN == 0) continue;
+            const count = c.read(self.input.handle, output[total..].ptr, output.len - total);
+            if (count < 0) {
+                if (std.c.errno(count) == .INTR or std.c.errno(count) == .AGAIN) continue;
+                return error.ReadFailed;
             }
+            if (count == 0) return error.ReadFailed;
+            total += @intCast(count);
+            if (std.mem.indexOfScalar(u8, output[0..total], '\n')) |end| return output[0..end];
             if (total == output.len) return error.TooLong;
         }
     }
 
     const vtable: config.Prompt.VTable = .{ .read = read };
 };
-
-const InstalledSignals = struct {
-    interrupt: std.posix.Sigaction,
-    terminate: std.posix.Sigaction,
-
-    fn restore(self: InstalledSignals) void {
-        std.posix.sigaction(.INT, &self.interrupt, null);
-        std.posix.sigaction(.TERM, &self.terminate, null);
-    }
-};
-
-fn installPromptSignals() InstalledSignals {
-    const action: std.posix.Sigaction = .{
-        .handler = .{ .handler = handlePromptSignal },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    };
-    var signals: InstalledSignals = undefined;
-    std.posix.sigaction(.INT, &action, &signals.interrupt);
-    std.posix.sigaction(.TERM, &action, &signals.terminate);
-    return signals;
-}
-
-fn handlePromptSignal(signal: std.posix.SIG) callconv(.c) void {
-    const code: u8 = switch (signal) {
-        .INT => 130,
-        .TERM => 143,
-        else => return,
-    };
-    pending_signal.store(code, .seq_cst);
-}
-
-fn pendingRequest() ?platform.Stop.Request {
-    return switch (pending_signal.load(.seq_cst)) {
-        130 => .interrupt,
-        143 => .terminate,
-        else => null,
-    };
-}
 
 fn disableEcho(file: std.Io.File) config.Prompt.Error!std.posix.termios {
     const original = std.posix.tcgetattr(file.handle) catch return error.ReadFailed;
@@ -157,6 +90,6 @@ fn disableEcho(file: std.Io.File) config.Prompt.Error!std.posix.termios {
     return original;
 }
 
-fn restoreEcho(file: std.Io.File, termios: std.posix.termios) void {
-    std.posix.tcsetattr(file.handle, .NOW, termios) catch {};
+fn restoreEcho(file: std.Io.File, termios: std.posix.termios) config.Prompt.Error!void {
+    std.posix.tcsetattr(file.handle, .NOW, termios) catch return error.ReadFailed;
 }

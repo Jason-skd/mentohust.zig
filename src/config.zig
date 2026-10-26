@@ -2,6 +2,7 @@
 
 const clap = @import("clap");
 const std = @import("std");
+const facts = @import("facts.zig");
 
 pub const max_prompt_bytes = 512;
 
@@ -39,8 +40,12 @@ pub const Configuration = struct {
     backoff_initial: std.Io.Duration,
     backoff_max: std.Io.Duration,
     shutdown_timeout: std.Io.Duration,
+    deployment: facts.Deployment,
 
     pub fn deinit(self: *Configuration) void {
+        self.allocator.free(self.deployment.service_name);
+        self.allocator.free(self.deployment.disk_serial);
+        self.allocator.free(self.deployment.alternate_dns_text);
         self.password.deinit(self.allocator);
         self.allocator.free(self.username);
         self.allocator.free(self.interface);
@@ -112,11 +117,21 @@ pub const Params = clap.parseParamsComptime(
     \\    --backoff-max <DURATION>       Maximum retry delay. Default: 60s.
     \\    --shutdown-timeout <DURATION>  Total graceful shutdown deadline. Default: 5s.
     \\-h, --help                         Display this help and exit.
+    \\    --service-name <STR>            Service name bytes (GBK), at most 32 bytes.
+    \\    --disk-serial <STR>             ASCII disk serial, at most 64 bytes.
+    \\    --alternate-dns <STR>           ASCII alternate DNS text, at most 247 bytes.
+    \\    --dhcp <DHCP>                   IPv4 facts mode: enabled or disabled. Default: disabled.
+    \\    --gateway <IPV4>                IPv4 gateway fact. Default: 0.0.0.0.
+    \\    --dns <IPV4>                    IPv4 DNS fact. Default: 0.0.0.0.
     \\    --version                      Display the version and exit.
     \\
 );
 
+pub const DhcpMode = enum { enabled, disabled };
+
 pub const Parsers = .{
+    .DHCP = clap.parsers.enumeration(DhcpMode),
+    .IPV4 = facts.parseIpv4,
     .STR = clap.parsers.string,
     .METHOD = clap.parsers.enumeration(Method),
     .RETRY = parseRetryLimit,
@@ -176,6 +191,26 @@ pub fn parse(
 
     try validateDurations(backoff_initial, backoff_max, shutdown_timeout);
 
+    const service_name = try allocator.dupe(u8, parsed.args.@"service-name" orelse environment.get("MENTOHUST_SERVICE_NAME") orelse "");
+    errdefer allocator.free(service_name);
+    const disk_serial = try allocator.dupe(u8, parsed.args.@"disk-serial" orelse environment.get("MENTOHUST_DISK_SERIAL") orelse "");
+    errdefer allocator.free(disk_serial);
+    const alternate_dns = try allocator.dupe(u8, parsed.args.@"alternate-dns" orelse environment.get("MENTOHUST_ALTERNATE_DNS") orelse "");
+    errdefer allocator.free(alternate_dns);
+    const dhcp = parsed.args.dhcp orelse if (environment.get("MENTOHUST_DHCP")) |text|
+        std.meta.stringToEnum(DhcpMode, text) orelse return error.InvalidDhcpMode
+    else
+        DhcpMode.disabled;
+    const deployment: facts.Deployment = .{
+        .service_name = service_name,
+        .disk_serial = disk_serial,
+        .alternate_dns_text = alternate_dns,
+        .dhcp_enabled = dhcp == .enabled,
+        .gateway = parsed.args.gateway orelse try facts.parseIpv4(environment.get("MENTOHUST_GATEWAY") orelse "0.0.0.0"),
+        .dns = parsed.args.dns orelse try facts.parseIpv4(environment.get("MENTOHUST_DNS") orelse "0.0.0.0"),
+    };
+    try deployment.validate();
+
     var prompt_buffer: [max_prompt_bytes]u8 = undefined;
     defer std.crypto.secureZero(u8, &prompt_buffer);
 
@@ -228,6 +263,7 @@ pub fn parse(
         .backoff_initial = backoff_initial,
         .backoff_max = backoff_max,
         .shutdown_timeout = shutdown_timeout,
+        .deployment = deployment,
     } };
 }
 
@@ -327,9 +363,7 @@ fn validateDurations(
 fn validateValues(interface: []const u8, username: []const u8, password: []const u8) !void {
     if (!validText(interface, 255)) return error.InvalidInterface;
     if (!validText(username, 255)) return error.InvalidUsername;
-    if (username.len + password.len > std.math.maxInt(u16) - 6) {
-        return error.InvalidCredentials;
-    }
+    if (password.len > 240) return error.InvalidCredentials;
 }
 
 fn validText(value: []const u8, max_len: usize) bool {

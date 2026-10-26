@@ -1,3 +1,76 @@
+## M3：真实平台认证链路
+
+### Added
+
+- 生产 CLI 现在读取接口 facts、注入凭据并驱动 v0.1.1 EAP-MD5 Session，不再在有效配置后直接
+  返回 `platform_adapter_unavailable`。
+- Linux 使用绑定显式接口的非阻塞 `AF_PACKET`，macOS 使用 BPF；接收过滤覆盖 EAPOL、目标 MAC
+  和本机回显，BPF 保留同一读取批次中的全部记录并拒绝截断。
+- 网络等待和退避统一等待内核信号队列与绝对 deadline。终端提示复用同一信号源；watchdog
+  使用可唤醒并回收的线程，在关闭操作阻塞时执行硬退出。
+- 读取接口 MAC、IPv4/掩码、IPv6 和 OS 位宽，在每次尝试及处理服务器帧前刷新快照。
+  增加服务名、磁盘序列号、DHCP 标志、网关、DNS 和备用 DNS 文本的显式部署参数。
+
+### Usage
+
+构建需要目标平台的 libc。macOS 使用系统 SDK，Linux/mipsel 的 musl 交叉编译命令为：
+
+```sh
+zig build check -Dtarget=mipsel-linux-musleabi
+```
+
+完整 CLI 配置契约如下；非密码项按 CLI、环境变量、默认值依次解析：
+
+| 配置 | CLI | 环境变量 | 默认值 |
+| --- | --- | --- | --- |
+| 网卡 | `-i, --interface` | `MENTOHUST_INTERFACE` | 必需 |
+| 用户名 | `-u, --username` | `MENTOHUST_USERNAME` | 必需 |
+| 密码 | 不接受 CLI 参数 | `MENTOHUST_PASSWORD` | 必需 |
+| 认证方法 | `--method` | `MENTOHUST_METHOD` | `auto`；`auto` / `md5` 均使用当前公开 profile |
+| 追加重试上限 | `--retry-limit` | `MENTOHUST_RETRY_LIMIT` | `unlimited` |
+| 首次重试延迟 | `--backoff-initial` | `MENTOHUST_BACKOFF_INITIAL` | `1s` |
+| 最大重试延迟 | `--backoff-max` | `MENTOHUST_BACKOFF_MAX` | `60s` |
+| 关闭总时限 | `--shutdown-timeout` | `MENTOHUST_SHUTDOWN_TIMEOUT` | `5s` |
+| 服务名 | `--service-name` | `MENTOHUST_SERVICE_NAME` | 空；最多 32 字节 GBK 原始字节 |
+| 磁盘序列号 | `--disk-serial` | `MENTOHUST_DISK_SERIAL` | 空；最多 64 字节可打印 ASCII |
+| 备用 DNS 文本 | `--alternate-dns` | `MENTOHUST_ALTERNATE_DNS` | 空；最多 247 字节可打印 ASCII |
+| DHCP 标志 | `--dhcp` | `MENTOHUST_DHCP` | `disabled`；可设 `enabled` |
+| 网关 | `--gateway` | `MENTOHUST_GATEWAY` | `0.0.0.0` |
+| DNS | `--dns` | `MENTOHUST_DNS` | `0.0.0.0` |
+
+必需配置缺失时可从终端补齐；无终端则直接失败。密码最多 240 字节，终端输入关闭回显，
+读取后清除环境和临时缓冲副本；配置持有的密码在退出时清零。服务名不自动从 UTF-8 转码为 GBK。
+
+网关、DNS 和 DHCP 标志由使用者或外部网络管理服务提供，未提供时按上述默认值注入；这些字段
+不是自动检测到的 DHCP 租约。IPv4 地址尚未配置时地址/掩码为零，IPv6 缺失时对应槽为空。
+client 不获取租约、不配置 IP、路由或 DNS，也不自动取得磁盘序列号。
+
+Linux 原始 Ethernet 需要 root 或 `CAP_NET_RAW`；macOS 需要访问 BPF 设备的权限。BPF 在持有
+描述符期间申请混杂接收以捕获发现多播，并在关闭时释放。普通发送也有有界等待，关闭发送共享
+生命周期的总 deadline。
+
+退出码：`0` 正常结束、`2` 配置/输入错误、`3` 认证拒绝、`4` 重试预算耗尽、`5` 平台能力或安全失败、
+`6` 内部错误，`130` / `143` 对应 `SIGINT` / `SIGTERM`。初始接口不存在、读取失败或原始网络权限不足
+不会被报告为认证成功。
+
+### Tests
+
+- 行为测试覆盖部署参数优先级、非法 facts、缺失接口、facts 刷新及重试、帧筛选、BPF 多记录/截断、
+  内核信号排队、网络 readiness、退避唤醒和绝对 deadline。
+- 隔离进程验证 watchdog 硬退出、等待中的终止信号，以及真实 socket 描述符上的 EAP-MD5 Session
+  交互、认证成功和单次 Logoff；伪终端验证密码输入不回显及中断后的回显恢复和缓冲清零。
+- macOS 原生执行测试，Linux/mipsel 完成生产 CLI、测试和进程验收程序的交叉编译；不要求测试访问
+  有特权的真实 Ethernet 接口。
+
+### Limits
+
+- M3 代码和自动化装配已实施，真实服务器联调待收尾；未验证真实网卡的原始收发、校园网持续在线、
+  真实掉线恢复或 Padavan 硬件/固件。当前没有可宣布兼容的校园网部署。
+- `rj-connect v0.1.1` 公开 profile 的目标证据来自 macOS 1.35；其他算法和私有字段需求应先由协议依赖
+  提供明确能力，client 不复制协议实现。
+- CLI 当前仅实现 macOS/Linux 的 Ethernet adapter。交叉编译使用 musl，并不代表 Padavan 的
+  内核、ABI、系统 libc 或认证服务器已经兼容；原生 Linux 执行和实际设备部署仍待验证。
+
 ## a6afde2
 
 ### Fixed
