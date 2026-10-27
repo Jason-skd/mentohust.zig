@@ -1,3 +1,74 @@
+# Changelog
+
+## v0.1.0
+
+首个发布版本。`mentohust.zig` 提供现代化 Ruijie（锐捷）校园网认证 CLI，当前交付 `macos` 与
+`mentohust` 两个有线 EAP-MD5 profile。
+
+### Added
+
+- 生产 CLI、配置解析、凭据输入、状态日志、重试策略、可中断等待和硬时限关闭。
+- macOS BPF 与 Linux `AF_PACKET` 原始 Ethernet adapter。
+- 认证、在线驻留、暂时性故障重试、重认证、信号关闭和单次 Logoff 生命周期。
+- `--profile` 及 `macos`、`mentohust` 两个公开协议路径。
+- Linux/mipsel 静态 musl 交叉构建、运行集成测试和真实接口验收能力。
+- MIT 许可证和独立贡献指南。
+
+### Usage
+
+```sh
+zig build
+sudo zig-out/bin/mentohust --interface en0 --username alice
+```
+
+Padavan 或 legacy 部署：
+
+```sh
+sudo zig-out/bin/mentohust --interface eth0 --username alice --profile mentohust
+```
+
+非密码项按 CLI、环境变量、默认值依次解析：
+
+| 配置          | CLI                  | 环境变量                     | 默认值                        |
+| ------------- | -------------------- | ---------------------------- | ----------------------------- |
+| 网卡          | `-i, --interface`    | `MENTOHUST_INTERFACE`        | 必需                          |
+| 用户名        | `-u, --username`     | `MENTOHUST_USERNAME`         | 必需                          |
+| 密码          | 不接受 CLI 参数      | `MENTOHUST_PASSWORD`         | 必需                          |
+| 认证方法      | `--method`           | `MENTOHUST_METHOD`           | `auto`；当前仅 `auto` / `md5` |
+| profile       | `--profile`          | `MENTOHUST_PROFILE`          | `macos`；可设 `mentohust`     |
+| 追加重试上限  | `--retry-limit`      | `MENTOHUST_RETRY_LIMIT`      | `unlimited`                   |
+| 首次重试延迟  | `--backoff-initial`  | `MENTOHUST_BACKOFF_INITIAL`  | `1s`                          |
+| 最大重试延迟  | `--backoff-max`      | `MENTOHUST_BACKOFF_MAX`      | `60s`                         |
+| 关闭总时限    | `--shutdown-timeout` | `MENTOHUST_SHUTDOWN_TIMEOUT` | `5s`                          |
+| 服务名        | `--service-name`     | `MENTOHUST_SERVICE_NAME`     | 空；最多 32 字节 GBK 原始字节 |
+| 磁盘序列号    | `--disk-serial`      | `MENTOHUST_DISK_SERIAL`      | 空；最多 64 字节可打印 ASCII  |
+| 备用 DNS 文本 | `--alternate-dns`    | `MENTOHUST_ALTERNATE_DNS`    | 空；最多 247 字节可打印 ASCII |
+| DHCP 标志     | `--dhcp`             | `MENTOHUST_DHCP`             | `disabled`；可设 `enabled`    |
+| 网关          | `--gateway`          | `MENTOHUST_GATEWAY`          | `0.0.0.0`                     |
+| DNS           | `--dns`              | `MENTOHUST_DNS`              | `0.0.0.0`                     |
+
+密码最多 240 字节。密码提示关闭终端回显；环境变量副本在解析后清除。client 不配置 DHCP、IP、
+路由或 DNS。原始 Ethernet 在 Linux 上需要 root 或 `CAP_NET_RAW`，在 macOS 上需要 BPF 权限。
+
+退出码：`0` 正常结束、`2` 配置/输入错误、`3` 认证拒绝、`4` 重试预算耗尽、`5` 平台能力或
+安全失败、`6` 内部错误，`130` / `143` 对应 `SIGINT` / `SIGTERM`。
+
+### Validation
+
+- `zig fmt --check build.zig build.zig.zon src`、`zig build` 和 `zig build test` 通过。
+- `zig build check -Dtarget=mipsel-linux-musleabi -Doptimize=ReleaseSafe` 通过。
+- 公开 EAP-MD5 profile 已完成真实接口认证和优雅关闭验收；具体验收环境不进入公开文档。
+
+### Limits
+
+- 当前只公开 EAP-MD5 的 `macos` 与 `mentohust` profile；PEAP、Direct、SAM/SMP、TLS 和
+  MSCHAPv2 不属于 `v0.1.0` 公开接口。
+- 不同校园网可能使用不同认证方法或私有字段，部署前应确认当前 profile 是否适用。
+- 长时间在线、真实掉线恢复、预算重置和重连稳定性仍待后续版本验收。
+- 持久安装、升级和回滚流程尚未形成发布验收结论；应用应由外部服务管理器托管。
+- `macos` facts 中的部署字段由使用方提供；接口地址、网关、DNS 和 DHCP 标志不被验证为同一租约。
+- `getifaddrs()` 无法取消，macOS facts 的 deadline 是返回前检查的尽力而为上限。
+
 ## e06ba91
 
 ### Changed
@@ -54,22 +125,22 @@ zig build check -Dtarget=mipsel-linux-musleabi
 
 完整 CLI 配置契约如下；非密码项按 CLI、环境变量、默认值依次解析：
 
-| 配置 | CLI | 环境变量 | 默认值 |
-| --- | --- | --- | --- |
-| 网卡 | `-i, --interface` | `MENTOHUST_INTERFACE` | 必需 |
-| 用户名 | `-u, --username` | `MENTOHUST_USERNAME` | 必需 |
-| 密码 | 不接受 CLI 参数 | `MENTOHUST_PASSWORD` | 必需 |
-| 认证方法 | `--method` | `MENTOHUST_METHOD` | `auto`；`auto` / `md5` 均使用当前公开 profile |
-| 追加重试上限 | `--retry-limit` | `MENTOHUST_RETRY_LIMIT` | `unlimited` |
-| 首次重试延迟 | `--backoff-initial` | `MENTOHUST_BACKOFF_INITIAL` | `1s` |
-| 最大重试延迟 | `--backoff-max` | `MENTOHUST_BACKOFF_MAX` | `60s` |
-| 关闭总时限 | `--shutdown-timeout` | `MENTOHUST_SHUTDOWN_TIMEOUT` | `5s` |
-| 服务名 | `--service-name` | `MENTOHUST_SERVICE_NAME` | 空；最多 32 字节 GBK 原始字节 |
-| 磁盘序列号 | `--disk-serial` | `MENTOHUST_DISK_SERIAL` | 空；最多 64 字节可打印 ASCII |
-| 备用 DNS 文本 | `--alternate-dns` | `MENTOHUST_ALTERNATE_DNS` | 空；最多 247 字节可打印 ASCII |
-| DHCP 标志 | `--dhcp` | `MENTOHUST_DHCP` | `disabled`；可设 `enabled` |
-| 网关 | `--gateway` | `MENTOHUST_GATEWAY` | `0.0.0.0` |
-| DNS | `--dns` | `MENTOHUST_DNS` | `0.0.0.0` |
+| 配置          | CLI                  | 环境变量                     | 默认值                                        |
+| ------------- | -------------------- | ---------------------------- | --------------------------------------------- |
+| 网卡          | `-i, --interface`    | `MENTOHUST_INTERFACE`        | 必需                                          |
+| 用户名        | `-u, --username`     | `MENTOHUST_USERNAME`         | 必需                                          |
+| 密码          | 不接受 CLI 参数      | `MENTOHUST_PASSWORD`         | 必需                                          |
+| 认证方法      | `--method`           | `MENTOHUST_METHOD`           | `auto`；`auto` / `md5` 均使用当前公开 profile |
+| 追加重试上限  | `--retry-limit`      | `MENTOHUST_RETRY_LIMIT`      | `unlimited`                                   |
+| 首次重试延迟  | `--backoff-initial`  | `MENTOHUST_BACKOFF_INITIAL`  | `1s`                                          |
+| 最大重试延迟  | `--backoff-max`      | `MENTOHUST_BACKOFF_MAX`      | `60s`                                         |
+| 关闭总时限    | `--shutdown-timeout` | `MENTOHUST_SHUTDOWN_TIMEOUT` | `5s`                                          |
+| 服务名        | `--service-name`     | `MENTOHUST_SERVICE_NAME`     | 空；最多 32 字节 GBK 原始字节                 |
+| 磁盘序列号    | `--disk-serial`      | `MENTOHUST_DISK_SERIAL`      | 空；最多 64 字节可打印 ASCII                  |
+| 备用 DNS 文本 | `--alternate-dns`    | `MENTOHUST_ALTERNATE_DNS`    | 空；最多 247 字节可打印 ASCII                 |
+| DHCP 标志     | `--dhcp`             | `MENTOHUST_DHCP`             | `disabled`；可设 `enabled`                    |
+| 网关          | `--gateway`          | `MENTOHUST_GATEWAY`          | `0.0.0.0`                                     |
+| DNS           | `--dns`              | `MENTOHUST_DNS`              | `0.0.0.0`                                     |
 
 必需配置缺失时可从终端补齐；无终端则直接失败。密码最多 240 字节，终端输入关闭回显，
 读取后清除环境和临时缓冲副本；配置持有的密码在退出时清零。服务名不自动从 UTF-8 转码为 GBK。

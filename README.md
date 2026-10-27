@@ -1,89 +1,124 @@
 # mentohust.zig
 
-使用 Zig 编写的锐捷校园网认证 CLI，复用
-[rj-connect.zig](https://github.com/Jason-skd/rj-connect.zig) 的确定性协议引擎，
-作为前台进程处理 Ethernet 收发、在线驻留、掉线重试和有界退出。
+## 项目简介
 
-## 项目概览
+`mentohust.zig` 是一个面向 Ruijie（锐捷）校园网的认证 CLI 客户端，适合使用 EAP-MD5 认证、
+又希望摆脱官方 GUI 客户端的用户。你可以在 macOS 终端、Linux 服务器、NAS 或路由器上运行它，
+完成认证并让连接持续在线。
 
-当前锁定 `rj-connect v0.1.2`，公开 `Session` 提供两个具名有线 EAP-MD5 profile：`macos` 与
-`mentohust`。M3 的平台 adapter、生产 CLI 装配和 Padavan/eth3 legacy profile 实机认证已完成；
-已测组合在认证成功后 2 秒内恢复外网，并完成有界关闭。持续在线、真实掉线恢复和更大范围部署
-覆盖仍属 M4 待验收项。
+项目以现代 Zig 实现，认证协议追求与目标 Ruijie 客户端一比一复刻。对于当前支持的认证方式，
+它可以作为官方客户端的非 GUI 替代方案：不需要桌面环境，适合 SSH、远程维护和无人值守运行。
 
-| 边界 | 职责 |
-| --- | --- |
-| `rj-connect.zig` | 协议算法、私有字段、报文编解码、Session 状态和 deadline |
-| `mentohust.zig` | CLI、凭据、重试策略、日志、平台 adapter 和生命周期装配 |
-| 平台 adapter | Linux packet socket / macOS BPF、接口 facts、单调时钟、信号队列和 watchdog |
-| 系统网络管理组件 | DHCP、IP、路由和 DNS 配置 |
-| 使用者 | 显式指定网卡、凭据和部署事实，由外部服务管理器托管进程 |
+与常见 MentoHUST 启动方式相比，`mentohust.zig` 不接受命令行密码参数，因此密码不会通过
+`ps` 等进程列表泄漏；密码只由隐藏终端输入或受保护的环境变量提供，不写日志，也不持久化。
 
-macOS profile 的 facts 来源必须区分。`rj-connect` 的 `Lease` 是协议表示，不代表 client
-读取了 DHCP 租约：
+## 功能特性
 
-| facts | 权威来源 |
-| --- | --- |
-| `source_mac`、`ip`、`netmask`、`ipv6_*`、`os_bits` | 指定接口的运行时快照 |
-| `service_name`、`disk_serial`、`alternate_dns_text`、`dhcp_enabled`、`gateway`、`dns` | CLI / 环境变量中的显式部署配置 |
-
-同一接口存在多个 IPv4 地址时，adapter 按网络字节序选择数值最小的 IPv4 地址，掩码随所选地址。
-这一点是确定性选择规则，不表示 client 获取或验证了 DHCP 租约。
-
-PEAP、Direct、SAM/SMP 不属于当前公开交付路径。密码只从环境变量或关闭回显的终端提示读取，
-不接受 CLI 明文参数，不持久化、不写日志。默认无限重试暂时性失败；配置错误、凭据拒绝和
-不支持的 EAP 方法以可区分状态退出。
+- **无需 GUI**：在终端、服务器和路由器上完成校园网认证。
+- **协议行为一致**：按一比一复刻目标实现认证报文和交互细节，尽量保持与官方客户端一致。
+- **密码更安全**：不通过命令参数传密码，避免出现在进程列表、日志和持久化配置中。
+- **适合自动化**：支持环境变量、稳定日志和可区分退出码，便于 systemd、procd 等服务管理器托管。
+- **保持在线**：认证成功后持续驻留，暂时性故障时按退避策略自动重试。
+- **关闭可控**：`Ctrl+C` 或 `SIGTERM` 会停止重试，在时限内发送 Logoff 并退出。
+- **兼容旧环境**：提供 `mentohust` profile，用于 Padavan 和既有 MentoHUST 部署。
+- **问题可定位**：认证拒绝、配置错误、权限不足和重试耗尽会返回不同状态。
 
 ## 快速开始
 
-需要 `build.zig.zon` 指定的 Zig 0.18 开发版本，以及对应目标的 libc 头文件和库；macOS 使用系统 SDK。
+1. 将适用于本机架构的 `mentohust` 可执行文件放入 `PATH`。
+2. 准备校园网账号和连接校园网的有线网卡名称；两者的说明见下方使用示例。
+3. 运行程序，按提示输入密码，并让进程保持运行。
 
 ```sh
-zig build
-zig build test
-zig-out/bin/mentohust --help
+sudo mentohust --interface YOUR_INTERFACE --username YOUR_ACCOUNT
 ```
 
-在准备好联调的目标环境中运行，网卡名按实际设备替换；原始 Ethernet 需要 root 或相应系统权限：
+`YOUR_INTERFACE` 和 `YOUR_ACCOUNT` 都是占位符，需要替换成实际值。默认使用 `macos` profile；
+Linux 或 Padavan 等 legacy 环境的完整命令见下方。
+
+## 使用示例
+
+### 常用使用方式
+
+macOS 使用默认的 `macos` profile：
 
 ```sh
-sudo zig-out/bin/mentohust --interface en0 --username alice
-# Padavan/旧 MentoHUST 兼容部署：
-sudo zig-out/bin/mentohust --interface eth3 --username alice --profile mentohust
+sudo mentohust --interface en0 --username YOUR_ACCOUNT
 ```
 
-CLI 提示输入密码，认证成功后持续驻留。`SIGINT` / `SIGTERM` 唤醒网络等待或重试退避，
-在协议允许时发送一次 Logoff，并以共享硬总时限完成关闭。
-
-`--profile macos` 读取接口 MAC、IPv4/掩码、IPv6 和 OS 位宽，并接受服务名、磁盘序列号、
-DHCP 标志、网关、DNS 和备用 DNS 文本等部署事实；`--profile mentohust` 只使用接口 MAC 和
-凭据，不刷新 macOS facts。默认 profile 为 `macos`。完整参数、优先级、默认值和限制见
-[CHANGELOG.md](CHANGELOG.md)。client 不配置系统 IP、路由或 DNS。
-
-macOS facts 在开始一次认证尝试前读取；处理服务器帧时，只在需要生成 EAP Request 响应前刷新。
-成功、失败、Logoff 和其他不需要响应的帧不读取 facts。普通 facts 读取和发送使用独立的 5 秒
-routine adapter 总期限；关闭发送使用 `--shutdown-timeout` 的共享总期限。`getifaddrs()` 进入后
-无法中断，因此 facts 读取的 deadline 是“返回前检查”的尽力而为上限，不是系统调用级抢占。
-
-## 开发验证
+Linux 或 Padavan 使用 legacy profile：
 
 ```sh
-zig fmt --check build.zig build.zig.zon src
-zig build
-zig build test
-zig build check -Dtarget=mipsel-linux-musleabi
+sudo mentohust --interface eth0 --username YOUR_ACCOUNT --profile mentohust
 ```
 
-测试包含真实 EAP-MD5 Session 的重试与关闭协作、内核信号队列、描述符等待、BPF 批次解析、
-伪终端密码输入与回显恢复，以及独立进程中的 watchdog 硬退出和 Ethernet adapter 协作。
-所有并发验收都有明确的超时和资源清理边界。
+Padavan 通常已经以 root 身份登录，可以省略 `sudo`。运行后终端会提示输入密码，输入内容不会
+回显。认证成功后保持进程运行；需要停止时按 `Ctrl+C`，或向进程发送 `SIGTERM`。
 
-本机 macOS 测试执行与 Linux/mipsel 交叉编译不证明真实原始接口收发、校园网认证或 Padavan 兼容；
-这些仍需真实服务器、设备和固件联调。
+### 完整使用指南
 
-## 文档索引
+#### 查找正确的网卡
 
-- [ROADMAP.md](ROADMAP.md)：成品目标、里程碑、范围和发布验收。
-- [CHANGELOG.md](CHANGELOG.md)：版本变化、配置契约、用法和限制。
-- [GLOSSARY.md](GLOSSARY.md)：产品边界、生命周期和安全术语。
-- [rj-connect.zig](https://github.com/Jason-skd/rj-connect.zig)：目标协议 profile 与协议研究的权威来源。
+| 环境    | 查看命令                                                     | 应该选择                          |
+| ------- | ------------------------------------------------------------ | --------------------------------- |
+| macOS   | `networksetup -listallhardwareports`、`route -n get default` | 有线网络对应的接口，例如 `en0`    |
+| Linux   | `ip route show default`                                      | 校园网默认路由中 `dev` 后面的接口 |
+| Padavan | `ip route`、`nvram get wan0_ifname_t`                        | WAN 默认路由使用的接口            |
+
+如果电脑同时连接 Wi-Fi，应选择连接校园网的**有线接口**。认证前还需要确保该接口已经取得 IP，
+并且系统存在默认路由；本工具负责认证，不代替 DHCP 或系统网络配置。
+
+#### 选择认证 profile
+
+| profile     | 适用场景                                          |
+| ----------- | ------------------------------------------------- |
+| `macos`     | macOS 有线网络，默认值                            |
+| `mentohust` | Padavan，以及按旧 MentoHUST 方式部署的 Linux 环境 |
+
+当前版本面向 EAP-MD5。不同学校的认证方式和私有字段可能不同；如果服务器直接拒绝认证，应检查
+账号、密码、profile 以及学校是否使用当前尚未支持的认证方式。
+
+#### 安全提供密码
+
+推荐直接使用隐藏的终端提示。需要交给 systemd、procd 等非交互服务托管时，应在服务配置中
+注入 `MENTOHUST_PASSWORD`，并限制配置文件权限，不要把密码写进普通 shell 脚本或命令行参数。
+
+在交互式 shell 中预置环境变量时，可以使用隐藏输入：
+
+```sh
+read -r -s MENTOHUST_PASSWORD
+printf '\n'
+export MENTOHUST_PASSWORD
+sudo --preserve-env=MENTOHUST_PASSWORD \
+  mentohust --interface eth0 --username YOUR_ACCOUNT --profile mentohust
+unset MENTOHUST_PASSWORD
+```
+
+网卡和用户名也可以分别通过 `MENTOHUST_INTERFACE`、`MENTOHUST_USERNAME` 提供。完整参数、
+默认值和限制见 [CHANGELOG.md](CHANGELOG.md)。
+
+#### 权限、日志和退出
+
+macOS 需要访问 BPF 设备；Linux 需要 root 或 `CAP_NET_RAW`。状态日志写入 stderr。
+
+| 退出码        | 含义与处理建议                                       |
+| ------------- | ---------------------------------------------------- |
+| `0`           | 正常结束                                             |
+| `2`           | 账号、网卡或其他配置无效，检查命令参数               |
+| `3`           | 认证被服务器拒绝，检查账号、密码、profile 和认证方式 |
+| `4`           | 暂时性故障达到重试上限，检查网络后重试               |
+| `5`           | 网卡、权限或平台能力不可用                           |
+| `6`           | 内部错误，保留日志用于排查                           |
+| `130` / `143` | 收到 `Ctrl+C` / `SIGTERM`                            |
+
+认证成功但仍无法访问网络时，继续检查系统 IP、网关、路由和 DNS。首次在某个校园网使用前，
+建议保留原有认证方式作为回滚手段。
+
+#### 兼容范围
+
+当前公开 `macos` 与 `mentohust` 两个 EAP-MD5 profile，支持 macOS 和 Linux 的原始 Ethernet
+adapter。兼容性由学校实际使用的认证方式决定；未支持的协议方法不会被宣称可用。
+
+## 许可证信息
+
+本项目使用 [MIT License](LICENSE)。

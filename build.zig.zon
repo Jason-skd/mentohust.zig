@@ -1,6 +1,6 @@
 .{
     .name = .mentohust,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x7ca4ae360918ea12,
     .minimum_zig_version = "0.18.0-dev.459+969db474f",
     .dependencies = .{
@@ -19,8 +19,10 @@
         "build.zig.zon",
         "src",
         "README.md",
+        "CONTRIBUTING.md",
         "ROADMAP.md",
         "CHANGELOG.md",
         "GLOSSARY.md",
+        "LICENSE",
     },
 }
