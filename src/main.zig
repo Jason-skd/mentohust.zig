@@ -94,17 +94,26 @@ fn execute(init: std.process.Init) !u8 {
             };
             defer runtime.deinit();
 
-            const initial_facts = runtime.readFacts(null) catch |err| {
-                try writeFailure(init.io, "platform_adapter_failed", err);
-                return 5;
+            const credentials: rj.session.Credentials = .{
+                .username = owned.username,
+                .password = owned.password.slice(),
             };
-            var session = rj.session.Session.init(init.gpa, .{
-                .facts = initial_facts,
-                .credentials = .{
-                    .username = owned.username,
-                    .password = owned.password.slice(),
+            var session = switch (owned.profile) {
+                .macos => blk: {
+                    const initial_facts = runtime.readFacts(null) catch |err| {
+                        try writeFailure(init.io, "platform_adapter_failed", err);
+                        return 5;
+                    };
+                    break :blk rj.session.Session.init(init.gpa, .{
+                        .facts = initial_facts,
+                        .credentials = credentials,
+                    });
                 },
-            }) catch |err| {
+                .mentohust => rj.session.Session.initLegacy(init.gpa, .{
+                    .source_mac = runtime.ethernet.source_mac,
+                    .credentials = credentials,
+                }),
+            } catch |err| {
                 try writeFailure(init.io, "session_initialization_failed", err);
                 const class = mentohust.lifecycle.classifySessionError(err);
                 return switch (class) {

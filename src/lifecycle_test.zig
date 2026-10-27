@@ -324,7 +324,7 @@ test "facts are refreshed before start and server response" {
     const termination = lifecycle.run(&session, fake.ports(), policy(), fake.reporter());
     try expectSignal(termination, .terminate);
     try std.testing.expectEqual(@as(usize, 2), fake.facts_calls);
-    try std.testing.expectEqual([4]u8{ 10, 1, 2, 3 }, session.facts.lease.ip);
+    try std.testing.expectEqual([4]u8{ 10, 1, 2, 3 }, session.factsSnapshot().?.lease.ip);
 }
 
 test "missing facts retry with a fresh snapshot and malformed facts stop before sending" {

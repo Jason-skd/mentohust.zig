@@ -6,7 +6,7 @@
 在目标系统上完成原始 Ethernet 收发、运行事实采集、在线维持、重试和有界关闭，并由外部
 服务管理器托管进程。
 
-当前依赖 `rj-connect v0.1.1` 的公开 `Session` 是目标 macOS 1.35 有线 EAP-MD5 profile。
+当前依赖 `rj-connect v0.1.2`，公开 `Session` 提供 macOS 与 MentoHUST 两个具名有线 EAP-MD5 profile。
 它负责算法细节、私有字段、状态转换、报文构造和校验；client 负责平台能力、运行事实、凭据
 和部署差异。PEAP、Direct、SAM/SMP 与旧私有分支留在依赖的研究模块，不属于当前公开交付接口。
 
@@ -15,9 +15,9 @@
 ### 当前版本功能
 
 - 提供前台运行的 CLI，暂不承诺稳定的公共库 API。
-- 仅把 `rj-connect v0.1.1` 公开目标 EAP-MD5 profile 作为当前认证路径。
-- client 注入 `Facts`（源 MAC、服务名、磁盘序列号、IPv6、IPv4 租约、备用 DNS 文本和 OS 位宽）
-  与凭据；client 如何取得这些值属于平台 adapter 和部署装配。
+- 支持 `rj-connect v0.1.2` 的 `macos` 与 `mentohust` 两个公开 EAP-MD5 profile；默认 `macos`。
+- client 为 macOS profile 注入 `Facts`（源 MAC、服务名、磁盘序列号、IPv6、IPv4 租约、
+  备用 DNS 文本和 OS 位宽）与凭据；legacy profile 只使用源 MAC 与凭据。
 - client 负责原始 Ethernet、时钟、信号、watchdog、重试调度、日志和进程生命周期。
 - 系统网络管理组件负责 DHCP、IP、路由和 DNS 配置；client 不修改这些状态。
 - 默认无限重试；用户可以限制每次掉线后的追加尝试次数。
@@ -32,7 +32,7 @@
 
 ### 部署与支持边界
 
-- Padavan 仍是本仓库计划中的首个真实部署环境，但 v0.1.1 公共 profile 的目标证据来自 macOS 1.35。
+- Padavan 是首个真实部署环境；legacy profile 已在 Padavan/eth3 完成一次成功认证和有界关闭。
 - Padavan、Linux/mipsel 或其他部署不得因编译通过而声明兼容，必须完成真实服务器联调和验收。
 - 任何未实测的认证路径、平台和校园网部署都明确列为兼容边界。
 
@@ -69,16 +69,17 @@
 
 ### M3：真实认证链路
 
-- 状态：已实施（c1f019b）；待收尾：真实服务器联调
-- 目标：实现平台 adapter 和可中断事件等待，读取接口和 `Facts`，注入凭据，驱动 v0.1.1 EAP-MD5 Session，完成
-  Ethernet 收发、服务器帧处理和真实服务器联调。若目标部署需要不同算法或字段，不在 client 中
-  复制协议细节，应先由 `rj-connect` 提供明确 profile 或能力边界。
+- 状态：已实施（c1f019b、feat/legacy-profile）；已验证 legacy profile 真实认证
+- 目标：实现平台 adapter 和可中断事件等待，读取接口和 `Facts`，注入凭据，驱动 rj-connect EAP-MD5 Session，完成
+  Ethernet 收发、服务器帧处理和真实服务器联调。需要不同算法或字段时，由 rj-connect 提供具名 profile。
+- 验收：Padavan/eth3 使用 `mentohust` profile 完成认证，2 秒内恢复外网并完成有界关闭；旧 mentohust 已恢复。
 
 ### M4：部署验收
 
-- 状态：待实施，受 M3 真实联调阻塞
-- 目标：先确认目标 profile 与 Padavan/实际校园网的兼容性；只有真实认证、持续在线、掉线恢复和
+- 状态：部分实施；真实认证与有界关闭已通过，持续在线和真实掉线恢复待验收
+- 目标：确认目标 profile 与 Padavan/实际校园网的兼容性；只有真实认证、持续在线、掉线恢复和
   有界关闭均通过后，才能发布对应平台和部署的版本承诺。
+- 待验收：长时间在线、真实掉线恢复、重试预算重置、legacy 其他用户名长度和部署范围。
 
 ## 目标变更
 

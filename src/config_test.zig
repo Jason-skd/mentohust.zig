@@ -144,6 +144,7 @@ test "CLI overrides environment values and retains lower-precedence options" {
     try std.testing.expectEqualStrings("cli-user", action.run.username);
     try std.testing.expectEqualStrings("env-password", action.run.password.slice());
     try std.testing.expectEqual(config.Method.md5, action.run.method);
+    try std.testing.expectEqual(config.Profile.macos, action.run.profile);
     try std.testing.expectEqual(config.RetryLimit.unlimited, action.run.retry_limit);
     try std.testing.expectEqual(@as(i96, 500 * std.time.ns_per_ms), action.run.backoff_initial.toNanoseconds());
     try std.testing.expectEqual(@as(i96, 10 * std.time.ns_per_s), action.run.backoff_max.toNanoseconds());
@@ -167,6 +168,7 @@ test "missing required values are prompted and defaults are resolved" {
     try std.testing.expectEqualStrings("alice", action.run.username);
     try std.testing.expectEqualStrings("secret", action.run.password.slice());
     try std.testing.expectEqual(config.Method.auto, action.run.method);
+    try std.testing.expectEqual(config.Profile.macos, action.run.profile);
     try std.testing.expectEqual(config.RetryLimit.unlimited, action.run.retry_limit);
     try std.testing.expectEqual(@as(i96, std.time.ns_per_s), action.run.backoff_initial.toNanoseconds());
     try std.testing.expectEqual(@as(i96, 60 * std.time.ns_per_s), action.run.backoff_max.toNanoseconds());
@@ -286,4 +288,32 @@ test "environment password is removed after configuration resolution" {
 
     try std.testing.expect(!environment.contains("MENTOHUST_PASSWORD"));
     try std.testing.expectEqualStrings("alice", environment.get("MENTOHUST_USERNAME").?);
+}
+
+test "profile can be selected explicitly or through the environment" {
+    var prompt: PromptStub = .{};
+    var explicit_env: EnvStub = .{ .entries = &.{
+        .{ .name = "MENTOHUST_PASSWORD", .value = "secret" },
+    } };
+    var explicit = try parseArgs(
+        std.testing.allocator,
+        "mentohust --interface cli0 --username alice --profile mentohust",
+        explicit_env.environment(),
+        prompt.prompt(),
+    );
+    defer explicit.run.deinit();
+    try std.testing.expectEqual(config.Profile.mentohust, explicit.run.profile);
+
+    var env: EnvStub = .{ .entries = &.{
+        .{ .name = "MENTOHUST_PASSWORD", .value = "secret" },
+        .{ .name = "MENTOHUST_PROFILE", .value = "mentohust" },
+    } };
+    var from_env = try parseArgs(
+        std.testing.allocator,
+        "mentohust --interface cli0 --username alice",
+        env.environment(),
+        prompt.prompt(),
+    );
+    defer from_env.run.deinit();
+    try std.testing.expectEqual(config.Profile.mentohust, from_env.run.profile);
 }

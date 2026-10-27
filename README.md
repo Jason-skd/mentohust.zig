@@ -6,9 +6,10 @@
 
 ## 项目概览
 
-当前锁定的 `rj-connect v0.1.1` 公开 Session 对应目标 macOS 1.35 有线 EAP-MD5 profile。
-M3 的平台 adapter 和生产 CLI 装配已实现；真实校园网服务器联调尚未完成，当前没有已经验收的
-校园网、路由器或固件组合。Padavan 仍是首个计划部署环境，编译成功不构成兼容承诺。
+当前锁定 `rj-connect v0.1.2`，公开 `Session` 提供两个具名有线 EAP-MD5 profile：`macos` 与
+`mentohust`。M3 的平台 adapter、生产 CLI 装配和 Padavan/eth3 legacy profile 实机认证已完成；
+已测组合在认证成功后 2 秒内恢复外网，并完成有界关闭。持续在线、真实掉线恢复和更大范围部署
+覆盖仍属 M4 待验收项。
 
 | 边界 | 职责 |
 | --- | --- |
@@ -36,13 +37,16 @@ zig-out/bin/mentohust --help
 
 ```sh
 sudo zig-out/bin/mentohust --interface en0 --username alice
+# Padavan/旧 MentoHUST 兼容部署：
+sudo zig-out/bin/mentohust --interface eth3 --username alice --profile mentohust
 ```
 
 CLI 提示输入密码，认证成功后持续驻留。`SIGINT` / `SIGTERM` 唤醒网络等待或重试退避，
 在协议允许时发送一次 Logoff，并以共享硬总时限完成关闭。
 
-接口 MAC、IPv4/掩码、IPv6 和 OS 位宽由 adapter 读取；服务名、磁盘序列号、DHCP 标志、
-网关、DNS 和备用 DNS 文本由使用者提供。完整参数、优先级、默认值和限制见
+`--profile macos` 读取接口 MAC、IPv4/掩码、IPv6 和 OS 位宽，并接受服务名、磁盘序列号、
+DHCP 标志、网关、DNS 和备用 DNS 文本等部署事实；`--profile mentohust` 只使用接口 MAC 和
+凭据，不刷新 macOS facts。默认 profile 为 `macos`。完整参数、优先级、默认值和限制见
 [CHANGELOG.md](CHANGELOG.md)。client 不配置系统 IP、路由或 DNS。
 
 ## 开发验证

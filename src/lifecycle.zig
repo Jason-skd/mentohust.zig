@@ -346,7 +346,7 @@ fn processStep(
     reporter: Reporter,
 ) (RunError || Reporter.Error)!Processed {
     var outcome = initial_outcome;
-    defer outcome.deinit(session.allocator);
+    defer outcome.deinit(session.allocationOwner());
 
     for (outcome.actions, 0..) |_, index| {
         _ = coordinator.dispatch(&ports, &outcome, index, null) catch |err| {
@@ -398,9 +398,10 @@ fn noteOnline(tracker: *Tracker, online: *bool, reporter: Reporter) Reporter.Err
 const FactsError = platform.NetworkState.Error || rj.session.Error;
 
 fn refreshFacts(session: *rj.session.Session, ports: platform.Ports, now: platform.Timestamp) FactsError!void {
+    if (session.profile() != .macos_1_35_wired) return;
     const fresh = try ports.network.readFacts(null);
     var updated = try session.step(now, .{ .facts = fresh });
-    defer updated.deinit(session.allocator);
+    defer updated.deinit(session.allocationOwner());
 }
 
 fn handleFactsError(
@@ -474,7 +475,7 @@ fn cancelAndDispatch(
             return .{ .failed = err };
         },
     };
-    defer canceled.deinit(session.allocator);
+    defer canceled.deinit(session.allocationOwner());
     for (canceled.actions, 0..) |_, index| {
         _ = coordinator.dispatch(&ports, &canceled, index, deadline) catch |err| {
             reportBestEffort(reporter, .{ .shutdown_failure = err });
@@ -659,8 +660,8 @@ pub fn classifyFailureReason(reason: rj.session.FailureReason) FailureClass {
 pub fn classifySessionError(err: rj.session.Error) FailureClass {
     return switch (err) {
         error.InvalidConfig, error.InvalidFacts, error.InvalidCredentials => .configuration,
-        error.UnsupportedEapMethod => .security,
-        error.InvalidFrame, error.DuplicateFrame, error.StaleIdentifier, error.TimerNotDue, error.StaleGeneration => .transient,
+        error.UnsupportedEapMethod, error.UnsupportedProfileInput => .security,
+        error.InvalidFrame, error.DuplicateFrame, error.StaleIdentifier, error.StaleTerminalIdentifier, error.TimerNotDue, error.StaleGeneration => .transient,
         error.InvalidState, error.TimeWentBackwards, error.TimestampOverflow, error.GenerationOverflow, error.OutOfMemory => .internal,
     };
 }
