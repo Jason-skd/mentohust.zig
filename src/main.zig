@@ -98,22 +98,7 @@ fn execute(init: std.process.Init) !u8 {
                 .username = owned.username,
                 .password = owned.password.slice(),
             };
-            var session = switch (owned.profile) {
-                .macos => blk: {
-                    const initial_facts = runtime.readFacts(null) catch |err| {
-                        try writeFailure(init.io, "platform_adapter_failed", err);
-                        return 5;
-                    };
-                    break :blk rj.session.Session.init(init.gpa, .{
-                        .facts = initial_facts,
-                        .credentials = credentials,
-                    });
-                },
-                .mentohust => rj.session.Session.initLegacy(init.gpa, .{
-                    .source_mac = runtime.ethernet.source_mac,
-                    .credentials = credentials,
-                }),
-            } catch |err| {
+            var session = initializeSession(init.gpa, &runtime, owned.profile, credentials) catch |err| {
                 try writeFailure(init.io, "session_initialization_failed", err);
                 const class = mentohust.lifecycle.classifySessionError(err);
                 return switch (class) {
@@ -141,6 +126,24 @@ fn execute(init: std.process.Init) !u8 {
             return termination.exitCode();
         },
     }
+}
+
+fn initializeSession(
+    allocator: std.mem.Allocator,
+    runtime: *const mentohust.runtime.Runtime,
+    profile: mentohust.config.Profile,
+    credentials: rj.session.Credentials,
+) rj.session.Error!rj.session.Session {
+    return switch (profile) {
+        .macos => rj.session.Session.init(allocator, .{
+            .facts = runtime.initial_facts,
+            .credentials = credentials,
+        }),
+        .mentohust => rj.session.Session.initLegacy(allocator, .{
+            .source_mac = runtime.ethernet.source_mac,
+            .credentials = credentials,
+        }),
+    };
 }
 
 fn reportConfigError(

@@ -10,12 +10,16 @@ pub const Policy = struct {
     retry_limit: config.RetryLimit = .unlimited,
     backoff_initial: std.Io.Duration,
     backoff_max: std.Io.Duration,
+    /// Upper bound for one routine adapter operation batch. This is separate
+    /// from the shared shutdown budget.
+    operation_timeout: std.Io.Duration = .fromSeconds(5),
     shutdown_timeout: std.Io.Duration,
 
     pub fn validate(self: Policy) !void {
         if (self.backoff_initial.toNanoseconds() <= 0 or
             self.backoff_max.toNanoseconds() <= 0 or
             self.backoff_initial.toNanoseconds() > self.backoff_max.toNanoseconds() or
+            self.operation_timeout.toNanoseconds() <= 0 or
             self.shutdown_timeout.toNanoseconds() <= 0)
         {
             return error.InvalidPolicy;
@@ -65,7 +69,7 @@ pub const Event = union(enum) {
     disconnected,
     protocol_failure: rj.session.FailureReason,
     transient_error: anyerror,
-    retry_scheduled: struct { attempt: u32, delay: std.Io.Duration },
+    retry_scheduled: struct { retry_attempt: u32, delay: std.Io.Duration },
     authentication_rejected: StepFailure,
     retry_exhausted: StepFailure,
     configuration_failure: StepFailure,
@@ -254,12 +258,14 @@ fn runInner(
             continue;
         };
         if (frame) |bytes| {
-            refreshFacts(session, ports, now) catch |err| {
-                const resolution = try handleFactsError(session, ports, now, policy.shutdown_timeout, err, &tracker, &online, reporter);
-                if (resolution.termination) |termination| return termination;
-                pending_start = resolution.pending_start;
-                continue;
-            };
+            if (coordinator.requiresFactsRefresh(bytes)) {
+                refreshFacts(session, ports, now, now.addDuration(policy.operation_timeout)) catch |err| {
+                    const resolution = try handleFactsError(session, ports, now, policy.shutdown_timeout, err, &tracker, &online, reporter);
+                    if (resolution.termination) |termination| return termination;
+                    pending_start = resolution.pending_start;
+                    continue;
+                };
+            }
             const outcome = session.step(now, .{ .frame = .{
                 .generation = session.currentGeneration(),
                 .bytes = bytes,
@@ -315,7 +321,7 @@ fn startAttempt(
     reporter: Reporter,
 ) (RunError || Reporter.Error)!Processed {
     try reporter.write(.{ .authentication_started = .{ .retry_attempt = retry_attempt } });
-    refreshFacts(session, ports, now) catch |err| {
+    refreshFacts(session, ports, now, now.addDuration(policy.operation_timeout)) catch |err| {
         const resolution = try handleFactsError(session, ports, now, policy.shutdown_timeout, err, tracker, online, reporter);
         return .{ .pending_start = resolution.pending_start, .termination = resolution.termination };
     };
@@ -347,9 +353,10 @@ fn processStep(
 ) (RunError || Reporter.Error)!Processed {
     var outcome = initial_outcome;
     defer outcome.deinit(session.allocationOwner());
+    const deadline = now.addDuration(policy.operation_timeout);
 
     for (outcome.actions, 0..) |_, index| {
-        _ = coordinator.dispatch(&ports, &outcome, index, null) catch |err| {
+        _ = coordinator.dispatch(&ports, &outcome, index, deadline) catch |err| {
             const resolution = try handleAdapterError(
                 session,
                 ports,
@@ -397,9 +404,14 @@ fn noteOnline(tracker: *Tracker, online: *bool, reporter: Reporter) Reporter.Err
 
 const FactsError = platform.NetworkState.Error || rj.session.Error;
 
-fn refreshFacts(session: *rj.session.Session, ports: platform.Ports, now: platform.Timestamp) FactsError!void {
+fn refreshFacts(
+    session: *rj.session.Session,
+    ports: platform.Ports,
+    now: platform.Timestamp,
+    deadline: platform.Timestamp,
+) FactsError!void {
     if (session.profile() != .macos_1_35_wired) return;
-    const fresh = try ports.network.readFacts(null);
+    const fresh = try ports.network.readFacts(deadline);
     var updated = try session.step(now, .{ .facts = fresh });
     defer updated.deinit(session.allocationOwner());
 }
@@ -415,8 +427,7 @@ fn handleFactsError(
     reporter: Reporter,
 ) Reporter.Error!FailureResolution {
     const class: FailureClass = switch (err) {
-        error.FactsUnavailable, error.IoFailed => .transient,
-        error.DeadlineExceeded => .internal,
+        error.DeadlineExceeded, error.FactsUnavailable, error.IoFailed => .transient,
         else => classifySessionError(@errorCast(err)),
     };
     if (class == .transient) try reporter.write(.{ .transient_error = err });
@@ -533,7 +544,7 @@ fn resolveAfterCleanup(
         reporter.write(.disconnected) catch return .{ .termination = .{ .internal_failure = error.WriteFailed } };
         const retry_at = tracker.scheduleRetry(now) orelse return .{ .termination = .{ .retry_exhausted = failure } };
         reporter.write(.{ .retry_scheduled = .{
-            .attempt = tracker.retryAttempt(),
+            .retry_attempt = tracker.retryAttempt(),
             .delay = now.durationTo(retry_at),
         } }) catch return .{ .termination = .{ .internal_failure = error.WriteFailed } };
         return .{ .pending_start = retry_at };
@@ -668,8 +679,7 @@ pub fn classifySessionError(err: rj.session.Error) FailureClass {
 
 pub fn classifyCoordinatorError(err: coordinator.Error) FailureClass {
     return switch (err) {
-        error.DeadlineExceeded => .internal,
-        error.InterfaceClosed, error.ReceiveFailed, error.SendFailed => .transient,
+        error.DeadlineExceeded, error.InterfaceClosed, error.ReceiveFailed, error.SendFailed => .transient,
         error.ActionOutOfRange => .internal,
     };
 }

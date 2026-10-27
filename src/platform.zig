@@ -22,6 +22,9 @@ pub const Ethernet = struct {
     };
 
     pub const VTable = struct {
+        /// Sends one complete frame. A null deadline selects the adapter's
+        /// bounded default; lifecycle-managed sends supply their own absolute
+        /// deadline so routine I/O never inherits the shutdown policy.
         send: *const fn (context: *anyopaque, frame: []const u8, deadline: Deadline) Error!void,
         /// Nonblocking probe. The borrowed frame remains valid until the next
         /// Ethernet call; null means no queued frame. Blocking belongs to Wait.
@@ -49,6 +52,12 @@ pub const NetworkState = struct {
     };
 
     pub const VTable = struct {
+        /// Reads one fresh facts snapshot.
+        ///
+        /// The deadline is best-effort because POSIX `getifaddrs` cannot be
+        /// canceled once entered. The adapter must reject an already-expired
+        /// deadline before reading and report `DeadlineExceeded` if it observes
+        /// expiry before returning; a null deadline requests no bound.
         readFacts: *const fn (context: *anyopaque, deadline: Deadline) Error!rj.session.Facts,
     };
 

@@ -14,6 +14,7 @@ pub const Runtime = struct {
     signals: *Signals,
     name: [c.IF_NAMESIZE:0]u8,
     deployment: facts.Deployment,
+    initial_facts: rj.session.Facts,
     ethernet: Ethernet,
     watchdog: Watchdog,
 
@@ -29,6 +30,7 @@ pub const Runtime = struct {
             .signals = signals,
             .name = name,
             .deployment = deployment,
+            .initial_facts = initial_facts,
             .ethernet = try Ethernet.init(snapshot.name, initial_facts.source_mac),
             .watchdog = .{ .io = io },
         };
@@ -52,9 +54,10 @@ pub const Runtime = struct {
     }
 
     pub fn readFacts(self: *Runtime, deadline: platform.Deadline) platform.NetworkState.Error!rj.session.Facts {
-        if (deadline) |end| if (std.Io.Clock.awake.now(self.io).compare(.gte, end)) return error.DeadlineExceeded;
+        if (deadlineExpired(self.io, deadline)) return error.DeadlineExceeded;
         const snapshot: facts.Snapshot = .{ .name = std.mem.sliceTo(&self.name, 0), .deployment = self.deployment };
         const result = try snapshot.read();
+        if (deadlineExpired(self.io, deadline)) return error.DeadlineExceeded;
         if (!std.mem.eql(u8, &result.source_mac, &self.ethernet.source_mac)) return error.FactsUnavailable;
         return result;
     }
@@ -91,6 +94,11 @@ pub const Runtime = struct {
     const clock_vtable: platform.Clock.VTable = .{ .now = now };
     const wait_vtable: platform.Wait.VTable = .{ .wait = wait };
 };
+
+fn deadlineExpired(io: std.Io, deadline: platform.Deadline) bool {
+    const end = deadline orelse return false;
+    return std.Io.Clock.awake.now(io).compare(.gte, end);
+}
 
 test {
     _ = @import("system.zig");

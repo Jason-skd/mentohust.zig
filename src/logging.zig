@@ -43,7 +43,7 @@ pub fn formatEvent(event: lifecycle.Event, writer: *std.Io.Writer) std.Io.Writer
             .{@errorName(err)},
         ),
         .retry_scheduled => |retry| {
-            try writer.print("mentohust: info retry_scheduled attempt={d} delay=", .{retry.attempt});
+            try writer.print("mentohust: info retry_scheduled retry_attempt={d} delay=", .{retry.retry_attempt});
             try retry.delay.format(writer);
             try writer.writeByte('\n');
         },
