@@ -1,3 +1,36 @@
+## e06ba91
+
+### Changed
+
+- macOS facts adapter 现在显式区分运行时接口观测（源 MAC、IPv4/掩码、IPv6、OS 位宽）和部署输入
+  （服务名、磁盘序列号、DHCP 标志、网关、DNS、备用 DNS 文本）；协议 `Lease` 中混排的字段只在
+  组合时形成，不表示 client 读取了 DHCP 租约。
+- 接口存在多个 IPv4 地址时，按网络字节序选择数值最小的地址，掩码随所选地址；该规则有独立行为测试。
+- macOS facts 只在开始认证尝试前和需要生成 EAP Request 响应前刷新。Success、Failure、Logoff
+  及不需要响应的帧不再读取系统接口。
+- 普通 adapter 操作使用独立的 5 秒总期限，关闭发送仍使用 `--shutdown-timeout` 共享总期限。
+  `retry_scheduled` 日志字段改为 `retry_attempt`，避免与首次总尝试混淆。
+- Runtime 启动快照直接用于 Session 初始化，不再重复读取 facts；`main` 只负责装配和退出码，
+  profile 到 Session 的构造移入独立函数。
+
+### Fixed
+
+- 普通发送或 facts 读取遇到 `DeadlineExceeded` 时按暂时性故障清理并重试，不再误分类为内部错误。
+- facts 读取在执行后再次检查 deadline；超过期限会返回 `DeadlineExceeded`。由于 `getifaddrs()`
+  进入后无法中断，该期限仍是返回前检查的尽力而为上限。
+
+### Tests
+
+- 增加多 IPv4 地址选择、EAP Request-only facts 刷新、facts/发送期限传递、普通发送超时重试、
+  facts 超时重试及过期 deadline 优先失败覆盖。
+- 明确 fake watchdog 测试只验证生命周期武装顺序；真实硬退出继续由独立进程 probe 覆盖。
+  测试名称和失败分类名称不再绑定过期的 `v0.1.1` 字面量。
+
+### Limits
+
+- 接口运行时快照不读取 DHCP 租约，也不验证 IPv4 地址、网关或 DNS 是否属于同一租约。
+- `getifaddrs()` 无法取消；facts deadline 不能抢占已经进入的系统调用。
+
 ## c1f019b
 
 ### Added
