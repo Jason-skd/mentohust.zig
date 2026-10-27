@@ -1,91 +1,58 @@
-# MentoHUST Zig
+# MentoHUST Zig Roadmap
 
 ## 成品目标
 
-交付一个可移植、长期运行的锐捷校园网认证 CLI。它复用 `rj-connect.zig` 的确定性协议引擎，
-在目标系统上完成原始 Ethernet 收发、运行事实采集、在线维持、重试和有界关闭，并由外部
-服务管理器托管进程。
+交付一个可移植、长期运行的 Ruijie（锐捷）校园网认证 CLI 客户端。项目以现代 Zig 实现为基础，
+追求认证协议的一比一复刻、清晰的安全边界、良好的命令行体验和可靠的服务托管能力。
 
-当前依赖 `rj-connect v0.1.2`，公开 `Session` 提供 macOS 与 MentoHUST 两个具名有线 EAP-MD5 profile。
-它负责算法细节、私有字段、状态转换、报文构造和校验；client 负责平台能力、运行事实、凭据
-和部署差异。PEAP、Direct、SAM/SMP 与旧私有分支留在依赖的研究模块，不属于当前公开交付接口。
+协议计算由 `rj-connect.zig` 的确定性引擎负责；本 client 负责原始 Ethernet、运行事实、凭据、
+在线维持、重试、日志和有界退出。系统 DHCP、IP、路由和 DNS 仍由目标系统的网络管理组件负责。
 
-## 范围与支持承诺
-
-### 当前版本功能
-
-- 提供前台运行的 CLI，暂不承诺稳定的公共库 API。
-- 支持 `rj-connect v0.1.2` 的 `macos` 与 `mentohust` 两个公开 EAP-MD5 profile；默认 `macos`。
-- client 为 macOS profile 组合运行时接口 facts（源 MAC、IPv4/掩码、IPv6、OS 位宽）和显式部署
-  事实（服务名、磁盘序列号、DHCP 标志、网关、DNS、备用 DNS 文本）及凭据；legacy profile
-  只使用源 MAC 与凭据。
-- client 负责原始 Ethernet、时钟、信号、watchdog、重试调度、日志和进程生命周期。
-- 系统网络管理组件负责 DHCP、IP、路由和 DNS 配置；client 不修改这些状态。
-- 默认无限重试；用户可以限制每次掉线后的追加尝试次数。
-- 凭据拒绝、配置错误和不支持的 EAP 方法属于不可恢复失败，直接退出并返回可区分状态。
-
-### 配置与安全边界
-
-- 网络接口必须显式指定；用户名和密码按 CLI、环境变量、交互提示的既有优先级解析。
-- 密码不接受 CLI 明文参数，不持久化或写入日志；读取后清除环境和临时缓冲副本。
-- client 不自行实现通用协议算法；协议算法由 `rj-connect` 负责，平台与部署差异由 adapter 注入。
-- `SIGINT` 和 `SIGTERM` 触发有界优雅退出；协议允许时发送一次 Logoff。
-
-### 部署与支持边界
-
-- Padavan 是首个真实部署环境；legacy profile 已在 Padavan/eth3 完成一次成功认证和有界关闭。
-- Padavan、Linux/mipsel 或其他部署不得因编译通过而声明兼容，必须完成真实服务器联调和验收。
-- 任何未实测的认证路径、平台和校园网部署都明确列为兼容边界。
+当前公开接口只包含 `macos` 与 `mentohust` 两个有线 EAP-MD5 profile。PEAP、Direct、SAM/SMP
+及其他未具名协议路径不属于 `v0.1.0` 的公开交付范围。
 
 ## 验收要求
 
-- 开发机完成目标 EAP-MD5 profile 的端到端 adapter 协作和自动化验证。
-- 自动化验证覆盖 facts 缺失/非法、凭据优先级、无终端缺凭据、暂时性失败重试、重试预算耗尽、
-  错误凭据、掉线和有界优雅退出。
-- 真实部署验收记录硬件、架构、内核、固件、认证路径和已测校园网环境。
-- 未实测的 profile、平台和部署明确写入发布限制。
-- `zig fmt --check build.zig build.zig.zon src`、`zig build` 和 `zig build test` 通过。
+### v0.1.0 发布基线
+
+- `zig fmt --check build.zig build.zig.zon src`、默认构建、自动化测试和 Linux/mipsel 交叉构建通过。
+- 公开 profile 的协议协作、配置失败、凭据处理、重试、信号、超时、日志和关闭路径得到覆盖。
+- CLI 能通过隐藏输入或受保护环境变量接收密码，不把密码写入命令参数、日志或持久化配置。
+- 用户文档解释账号、网卡、profile、权限、退出状态和兼容范围，不公开维护者的设备或网络信息。
+- 未完成或未支持的认证路径明确写入用户限制，不把编译成功视为通用兼容承诺。
+
+### 后续支持验收
+
+- 长时间在线期间持续处理协议 deadline、心跳和重认证。
+- 真实掉线后完成恢复，并验证重试预算重置。
+- 扩大用户名长度、硬件、固件和校园网部署覆盖。
+- 持久安装、升级、回滚和服务管理流程得到验证。
 
 ## 里程碑
 
 ### M0：产品边界与文档
 
 - 状态：已实施（01822e6）
-- 交付：README、ROADMAP、CHANGELOG 和术语表定义成品、职责和安全边界。
 
 ### M1：依赖集成与平台缝
 
 - 状态：已实施（469a4bf）
-- 目标：锁定 `rj-connect v0.1.1` 与 `zig-clap`，建立 Ethernet、运行 facts、时钟、信号和
-  watchdog 的 client adapter 边界及协作测试。旧 TLS/MSCHAPv2/PEAP 端口随公开 API 收敛移除。
 
 ### M2：CLI 与长期运行生命周期
 
-- 状态：已实施（a6afde2）；生产 CLI 集成已实施
-- 目标：完成参数、凭据来源、目标 profile 初始化、重试预算、指数退避、日志和有界退出，并覆盖
-  当前公开 profile 的失败分类。旧的动态凭据、DHCP、TLS、MSCHAPv2 和 Direct action 流程不再属于
-  当前 client 生命周期。
-- 验收：认证成功后持续驻留；网络与信号及时唤醒；绝对 deadline 不因伪唤醒重置；掉线恢复后
-  重置预算；日志和清理失败可区分，信号关闭受硬总时限保护。
+- 状态：已实施（a6afde2）
 
 ### M3：真实认证链路
 
-- 状态：已实施（c1f019b、feat/legacy-profile、e06ba91）；已验证 legacy profile 真实认证
-- 目标：实现平台 adapter 和可中断事件等待，读取接口和 `Facts`，注入凭据，驱动 rj-connect EAP-MD5 Session，完成
-  Ethernet 收发、服务器帧处理和真实服务器联调。需要不同算法或字段时，由 rj-connect 提供具名 profile。
-- 验收：Padavan/eth3 使用 `mentohust` profile 完成认证，2 秒内恢复外网并完成有界关闭；旧 mentohust 已恢复。
+- 状态：已实施（v0.1.0）
 
-### M4：部署验收
+### M4：长期运行与部署覆盖
 
-- 状态：部分实施；真实认证与有界关闭已通过，持续在线和真实掉线恢复待验收
-- 目标：确认目标 profile 与 Padavan/实际校园网的兼容性；只有真实认证、持续在线、掉线恢复和
-  有界关闭均通过后，才能发布对应平台和部署的版本承诺。
-- 待验收：长时间在线、真实掉线恢复、重试预算重置、legacy 其他用户名长度和部署范围。
+- 状态：待收尾：长时间在线、真实掉线恢复和部署范围验收。
 
 ## 目标变更
 
-- `rj-connect v0.1.1` 将公开 Session 收敛为目标 macOS 1.35 EAP-MD5 profile；本仓库同步移除
-  对 PEAP、Direct、SAM/SMP、TLS 和 MSCHAPv2 公开 action/adapter 的依赖。
-- M1/M2 已完成破坏性 API 变更回补；M3/M4 采用 facts 装配、目标 profile 联调和部署兼容性验证，
-  不再规划两条公开认证路径。
-- Padavan 仍是部署目标，但不再被文档预先视为与 macOS 1.35 profile 兼容；兼容性由 M3/M4 证据决定。
+- `v0.1.0` 把交付范围收敛为 `rj-connect v0.1.2` 提供的 `macos` 与 `mentohust` EAP-MD5 profile。
+- `v0.1.0` 是首个发布版本；支持承诺只覆盖文档中明确列出的协议范围和平台能力。
+- 持续在线、真实掉线恢复和更广泛部署覆盖保留在 M4，不以本次 tag 宣告完成。
+- 未来协议方法必须由 `rj-connect.zig` 提供具名能力后进入范围，client 不复制协议算法。
