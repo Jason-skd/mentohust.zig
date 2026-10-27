@@ -11,6 +11,11 @@ pub const Method = enum {
     md5,
 };
 
+pub const Profile = enum {
+    macos,
+    mentohust,
+};
+
 pub const RetryLimit = union(enum) {
     unlimited,
     limited: u32,
@@ -36,6 +41,7 @@ pub const Configuration = struct {
     username: []u8,
     password: Secret,
     method: Method,
+    profile: Profile,
     retry_limit: RetryLimit,
     backoff_initial: std.Io.Duration,
     backoff_max: std.Io.Duration,
@@ -112,6 +118,7 @@ pub const Params = clap.parseParamsComptime(
     \\-i, --interface <STR>              Network interface used for raw Ethernet.
     \\-u, --username <STR>               Authentication username.
     \\    --method <METHOD>              Authentication method: auto or md5. Default: auto.
+    \\    --profile <PROFILE>            Wire profile: macos or mentohust. Default: macos.
     \\    --retry-limit <RETRY>          Additional attempts after each loss: N or unlimited. Default: unlimited.
     \\    --backoff-initial <DURATION>   Delay before the first retry. Default: 1s.
     \\    --backoff-max <DURATION>       Maximum retry delay. Default: 60s.
@@ -134,6 +141,7 @@ pub const Parsers = .{
     .IPV4 = facts.parseIpv4,
     .STR = clap.parsers.string,
     .METHOD = clap.parsers.enumeration(Method),
+    .PROFILE = clap.parsers.enumeration(Profile),
     .RETRY = parseRetryLimit,
     .DURATION = parseDuration,
 };
@@ -160,6 +168,13 @@ pub fn parse(
         std.meta.stringToEnum(Method, value) orelse return error.InvalidMethod
     else
         Method.auto;
+
+    const profile = if (parsed.args.profile) |value|
+        value
+    else if (environment.get("MENTOHUST_PROFILE")) |value|
+        std.meta.stringToEnum(Profile, value) orelse return error.InvalidProfile
+    else
+        Profile.macos;
 
     const retry_limit = if (parsed.args.@"retry-limit") |value|
         value
@@ -259,6 +274,7 @@ pub fn parse(
         .username = username,
         .password = .{ .bytes = password },
         .method = method,
+        .profile = profile,
         .retry_limit = retry_limit,
         .backoff_initial = backoff_initial,
         .backoff_max = backoff_max,
