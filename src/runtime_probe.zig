@@ -205,6 +205,7 @@ fn runSession(init: std.process.Init, signals: *app.runtime.Signals) !void {
         .signals = signals,
         .name = @splat(0),
         .deployment = .{},
+        .initial_facts = .{ .source_mac = client_mac },
         .ethernet = .{ .fd = pair[0], .source_mac = client_mac },
         .watchdog = .{ .io = init.io },
     };

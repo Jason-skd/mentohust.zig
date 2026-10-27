@@ -8,7 +8,7 @@ test "lifecycle events format as single human-readable lines" {
 
     try logging.formatEvent(.{ .authentication_started = .{ .retry_attempt = null } }, &output.writer);
     try logging.formatEvent(.{ .retry_scheduled = .{
-        .attempt = 2,
+        .retry_attempt = 2,
         .delay = .fromSeconds(4),
     } }, &output.writer);
     try logging.formatEvent(.{ .protocol_failure = .start_timeout }, &output.writer);
@@ -21,7 +21,7 @@ test "lifecycle events format as single human-readable lines" {
 
     try std.testing.expectEqualStrings(
         "mentohust: info authentication_started retry_attempt=initial\n" ++
-            "mentohust: info retry_scheduled attempt=2 delay=4s\n" ++
+            "mentohust: info retry_scheduled retry_attempt=2 delay=4s\n" ++
             "mentohust: warn protocol_failure reason=start_timeout\n" ++
             "mentohust: info shutdown_completed signal=terminate\n" ++
             "mentohust: error authentication_rejected reason=server_failure\n" ++

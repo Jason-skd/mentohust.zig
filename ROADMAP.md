@@ -16,8 +16,9 @@
 
 - 提供前台运行的 CLI，暂不承诺稳定的公共库 API。
 - 支持 `rj-connect v0.1.2` 的 `macos` 与 `mentohust` 两个公开 EAP-MD5 profile；默认 `macos`。
-- client 为 macOS profile 注入 `Facts`（源 MAC、服务名、磁盘序列号、IPv6、IPv4 租约、
-  备用 DNS 文本和 OS 位宽）与凭据；legacy profile 只使用源 MAC 与凭据。
+- client 为 macOS profile 组合运行时接口 facts（源 MAC、IPv4/掩码、IPv6、OS 位宽）和显式部署
+  事实（服务名、磁盘序列号、DHCP 标志、网关、DNS、备用 DNS 文本）及凭据；legacy profile
+  只使用源 MAC 与凭据。
 - client 负责原始 Ethernet、时钟、信号、watchdog、重试调度、日志和进程生命周期。
 - 系统网络管理组件负责 DHCP、IP、路由和 DNS 配置；client 不修改这些状态。
 - 默认无限重试；用户可以限制每次掉线后的追加尝试次数。
@@ -69,7 +70,7 @@
 
 ### M3：真实认证链路
 
-- 状态：已实施（c1f019b、feat/legacy-profile）；已验证 legacy profile 真实认证
+- 状态：已实施（c1f019b、feat/legacy-profile、e06ba91）；已验证 legacy profile 真实认证
 - 目标：实现平台 adapter 和可中断事件等待，读取接口和 `Facts`，注入凭据，驱动 rj-connect EAP-MD5 Session，完成
   Ethernet 收发、服务器帧处理和真实服务器联调。需要不同算法或字段时，由 rj-connect 提供具名 profile。
 - 验收：Padavan/eth3 使用 `mentohust` profile 完成认证，2 秒内恢复外网并完成有界关闭；旧 mentohust 已恢复。

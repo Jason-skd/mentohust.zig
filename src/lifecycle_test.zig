@@ -43,10 +43,13 @@ const Harness = struct {
     receive_error: ?platform.Ethernet.Error = null,
     facts_error: ?platform.NetworkState.Error = null,
     facts_calls: usize = 0,
+    facts_deadlines: [128]platform.Deadline = undefined,
     current_facts: rj.session.Facts = .{ .source_mac = .{ 0, 1, 2, 3, 4, 5 } },
     sent_types: [64]u8 = undefined,
     sent_at: [64]platform.Timestamp = undefined,
+    sent_deadlines: [64]platform.Deadline = undefined,
     send_count: usize = 0,
+    start_send_error: ?platform.Ethernet.Error = null,
     logoff_count: usize = 0,
     cleanup_deadline: platform.Deadline = null,
     cleanup_send_error: ?platform.Ethernet.Error = null,
@@ -119,7 +122,14 @@ fn ethernetSend(context: *anyopaque, frame: []const u8, deadline: platform.Deadl
     if (fake.send_count == fake.sent_types.len) return error.SendFailed;
     fake.sent_types[fake.send_count] = frame[15];
     fake.sent_at[fake.send_count] = fake.now;
+    fake.sent_deadlines[fake.send_count] = deadline;
     fake.send_count += 1;
+    if (frame[15] == 1) {
+        if (fake.start_send_error) |err| {
+            fake.start_send_error = null;
+            return err;
+        }
+    }
     if (frame[15] == 2) {
         fake.logoff_count += 1;
         fake.cleanup_deadline = deadline;
@@ -145,8 +155,9 @@ fn ethernetReceive(context: *anyopaque, _: platform.Deadline) platform.Ethernet.
     return frame;
 }
 
-fn networkReadFacts(context: *anyopaque, _: platform.Deadline) platform.NetworkState.Error!rj.session.Facts {
+fn networkReadFacts(context: *anyopaque, deadline: platform.Deadline) platform.NetworkState.Error!rj.session.Facts {
     const fake = harness(context);
+    fake.facts_deadlines[fake.facts_calls] = deadline;
     fake.facts_calls += 1;
     if (fake.facts_error) |err| {
         fake.facts_error = null;
@@ -310,7 +321,7 @@ fn expectSignal(termination: lifecycle.Termination, signal: platform.Stop.Reques
     try std.testing.expectEqual(signal, termination.signal);
 }
 
-test "facts are refreshed before start and server response" {
+test "facts are refreshed before start and each EAP request response" {
     var session = try initSession();
     defer session.deinit();
     var fake: Harness = .{
@@ -324,6 +335,8 @@ test "facts are refreshed before start and server response" {
     const termination = lifecycle.run(&session, fake.ports(), policy(), fake.reporter());
     try expectSignal(termination, .terminate);
     try std.testing.expectEqual(@as(usize, 2), fake.facts_calls);
+    try std.testing.expectEqual(@as(i96, 5 * std.time.ns_per_s), fake.facts_deadlines[0].?.nanoseconds);
+    try std.testing.expectEqual(@as(i96, 5 * std.time.ns_per_s), fake.facts_deadlines[1].?.nanoseconds);
     try std.testing.expectEqual([4]u8{ 10, 1, 2, 3 }, session.factsSnapshot().?.lease.ip);
 }
 
@@ -349,6 +362,23 @@ test "missing facts retry with a fresh snapshot and malformed facts stop before 
     try std.testing.expectEqual(@as(usize, 0), invalid.send_count);
 }
 
+test "facts read timeout is a transient retry rather than an internal failure" {
+    var session = try initSession();
+    defer session.deinit();
+    var fake: Harness = .{
+        .stop_immediately = false,
+        .facts_error = error.DeadlineExceeded,
+        .script = &.{
+            .{ .event = .timeout },
+            .{ .event = .{ .signal = .terminate } },
+        },
+    };
+    try expectSignal(lifecycle.run(&session, fake.ports(), policy(), fake.reporter()), .terminate);
+    try std.testing.expectEqual(@as(usize, 1), fake.countEvents(.transient_error));
+    try std.testing.expectEqual(@as(usize, 1), fake.countEvents(.retry_scheduled));
+    try std.testing.expectEqual(@as(usize, 2), fake.countEvents(.authentication_started));
+}
+
 test "network readiness authenticates before timeout and remains online without a deadline" {
     var session = try initSession();
     defer session.deinit();
@@ -363,6 +393,7 @@ test "network readiness authenticates before timeout and remains online without 
     try expectSignal(lifecycle.run(&session, fake.ports(), policy(), fake.reporter()), .terminate);
     try std.testing.expectEqual(@as(usize, 1), fake.countEvents(.online));
     try std.testing.expectEqual(@as(usize, 0), fake.countEvents(.protocol_failure));
+    try std.testing.expectEqual(@as(usize, 3), fake.facts_calls);
     try std.testing.expectEqual(@as(usize, 5), fake.wait_calls);
     try std.testing.expect(fake.waits[3].deadline == null);
     try std.testing.expect(fake.waits[4].deadline == null);
@@ -390,6 +421,28 @@ test "transient receive failure cancels backs off and authenticates again" {
         try std.testing.expect(!fake.waits[1].receive);
         try std.testing.expectEqual(@as(usize, 2), fake.logoff_count);
     }
+}
+
+test "normal send deadline failure cancels and enters a fresh authentication attempt" {
+    var session = try initSession();
+    defer session.deinit();
+    const script = [_]Wake{
+        .{ .event = .timeout },                  .{ .event = .{ .eap = &identity } },
+        .{ .event = .{ .eap = &challenge } },    .{ .event = .{ .eap = &success } },
+        .{ .event = .{ .signal = .terminate } },
+    };
+    var fake: Harness = .{
+        .stop_immediately = false,
+        .script = &script,
+        .start_send_error = error.DeadlineExceeded,
+    };
+    try expectSignal(lifecycle.run(&session, fake.ports(), policy(), fake.reporter()), .terminate);
+    try std.testing.expectEqual(@as(usize, 1), fake.countEvents(.transient_error));
+    try std.testing.expectEqual(@as(usize, 1), fake.countEvents(.retry_scheduled));
+    try std.testing.expectEqual(@as(usize, 2), fake.countEvents(.authentication_started));
+    try std.testing.expectEqual(@as(u8, 1), fake.sent_types[2]);
+    try std.testing.expectEqual(@as(i96, 5 * std.time.ns_per_s), fake.sent_deadlines[0].?.nanoseconds);
+    try std.testing.expectEqual(@as(i96, 6 * std.time.ns_per_s), fake.sent_deadlines[2].?.nanoseconds);
 }
 
 test "spurious wakes preserve the original absolute timeout" {
@@ -470,7 +523,7 @@ test "successful recovery resets the budget for a later disconnect" {
     try std.testing.expectEqual(@as(usize, 2), fake.countEvents(.online));
     try std.testing.expectEqual(@as(usize, 2), fake.countEvents(.retry_scheduled));
     for (fake.events[0..fake.event_count]) |event| {
-        if (event == .retry_scheduled) try std.testing.expectEqual(@as(u32, 1), event.retry_scheduled.attempt);
+        if (event == .retry_scheduled) try std.testing.expectEqual(@as(u32, 1), event.retry_scheduled.retry_attempt);
     }
 }
 
@@ -576,7 +629,7 @@ test "watchdog arm failure does not enter unbounded signal cleanup" {
     try std.testing.expectEqual(@as(usize, 1), fake.countEvents(.shutdown_failure));
 }
 
-test "watchdog is armed before blocked Logoff and remains armed until send returns" {
+test "fake watchdog records the arm across a blocked Logoff" {
     var session = try initSession();
     defer session.deinit();
     var blocked: BlockedCleanup = .{};
@@ -649,7 +702,7 @@ test "tracker applies bounded exponential retry delays" {
     try std.testing.expect(tracker.scheduleRetry(now) == null);
 }
 
-test "failure classification follows the v0.1.1 session contract" {
+test "failure classification follows the selected session contract" {
     try std.testing.expectEqual(
         lifecycle.FailureClass.authentication_rejected,
         lifecycle.classifyFailureReason(.server_failure),

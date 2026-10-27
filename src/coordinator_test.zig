@@ -32,7 +32,7 @@ fn timestamp(nanoseconds: i96) platform.Timestamp {
     return .fromNanoseconds(nanoseconds);
 }
 
-test "v0.1.1 session exposes target facts and sends its start frame" {
+test "selected session exposes target facts and sends its start frame" {
     var session = try rj.session.Session.init(std.testing.allocator, .{
         .facts = .{ .source_mac = .{ 0, 1, 2, 3, 4, 5 } },
         .credentials = .{ .username = "alice", .password = "secret" },
@@ -49,6 +49,34 @@ test "v0.1.1 session exposes target facts and sends its start frame" {
     const result = try coordinator.dispatch(&ports, &outcome, 0, null);
     try std.testing.expectEqual(coordinator.Result.handled, result);
     try std.testing.expect(fake.sent.len > 0);
+}
+
+test "facts refresh is required only for EAP request frames" {
+    const client_mac = [6]u8{ 0, 1, 2, 3, 4, 5 };
+    const server_mac = [6]u8{ 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff };
+    var output: [128]u8 = undefined;
+    const request = try rj.protocol.eapol.encodeEap(
+        client_mac,
+        server_mac,
+        .request,
+        1,
+        .identity,
+        "",
+        &output,
+    );
+    try std.testing.expect(coordinator.requiresFactsRefresh(request));
+
+    const success = try rj.protocol.eapol.encodeEap(
+        client_mac,
+        server_mac,
+        .success,
+        1,
+        null,
+        "",
+        &output,
+    );
+    try std.testing.expect(!coordinator.requiresFactsRefresh(success));
+    try std.testing.expect(!coordinator.requiresFactsRefresh(&.{ 1, 2, 3 }));
 }
 
 test "dispatch rejects an action index outside the outcome" {

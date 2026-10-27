@@ -7,6 +7,7 @@ const platform = @import("platform.zig");
 const Signals = @import("signals.zig").Signals;
 
 pub const OpenError = error{ InterfaceUnavailable, PermissionDenied, UnsupportedLink, IoFailed };
+pub const default_send_timeout = std.Io.Duration.fromSeconds(5);
 const ethertype: u16 = 0x888e;
 
 pub const Ethernet = struct {
@@ -51,9 +52,10 @@ pub const Ethernet = struct {
         return self.cursor < self.batch_len;
     }
 
+    /// Direct callers without a lifecycle deadline still get a bounded send.
+    /// Lifecycle-managed sends always pass an absolute deadline.
     pub fn send(self: *Ethernet, io: std.Io, signals: *Signals, bytes: []const u8, deadline: platform.Deadline) platform.Ethernet.Error!void {
-        // Normal authentication sends are also bounded if the driver stalls.
-        const end = deadline orelse std.Io.Clock.awake.now(io).addDuration(.fromSeconds(5));
+        const end = deadline orelse std.Io.Clock.awake.now(io).addDuration(default_send_timeout);
         while (true) {
             if (std.Io.Clock.awake.now(io).compare(.gte, end)) return error.DeadlineExceeded;
             const rc = if (builtin.os.tag == .macos)

@@ -19,6 +19,17 @@
 | 系统网络管理组件 | DHCP、IP、路由和 DNS 配置 |
 | 使用者 | 显式指定网卡、凭据和部署事实，由外部服务管理器托管进程 |
 
+macOS profile 的 facts 来源必须区分。`rj-connect` 的 `Lease` 是协议表示，不代表 client
+读取了 DHCP 租约：
+
+| facts | 权威来源 |
+| --- | --- |
+| `source_mac`、`ip`、`netmask`、`ipv6_*`、`os_bits` | 指定接口的运行时快照 |
+| `service_name`、`disk_serial`、`alternate_dns_text`、`dhcp_enabled`、`gateway`、`dns` | CLI / 环境变量中的显式部署配置 |
+
+同一接口存在多个 IPv4 地址时，adapter 按网络字节序选择数值最小的 IPv4 地址，掩码随所选地址。
+这一点是确定性选择规则，不表示 client 获取或验证了 DHCP 租约。
+
 PEAP、Direct、SAM/SMP 不属于当前公开交付路径。密码只从环境变量或关闭回显的终端提示读取，
 不接受 CLI 明文参数，不持久化、不写日志。默认无限重试暂时性失败；配置错误、凭据拒绝和
 不支持的 EAP 方法以可区分状态退出。
@@ -48,6 +59,11 @@ CLI 提示输入密码，认证成功后持续驻留。`SIGINT` / `SIGTERM` 唤�
 DHCP 标志、网关、DNS 和备用 DNS 文本等部署事实；`--profile mentohust` 只使用接口 MAC 和
 凭据，不刷新 macOS facts。默认 profile 为 `macos`。完整参数、优先级、默认值和限制见
 [CHANGELOG.md](CHANGELOG.md)。client 不配置系统 IP、路由或 DNS。
+
+macOS facts 在开始一次认证尝试前读取；处理服务器帧时，只在需要生成 EAP Request 响应前刷新。
+成功、失败、Logoff 和其他不需要响应的帧不读取 facts。普通 facts 读取和发送使用独立的 5 秒
+routine adapter 总期限；关闭发送使用 `--shutdown-timeout` 的共享总期限。`getifaddrs()` 进入后
+无法中断，因此 facts 读取的 deadline 是“返回前检查”的尽力而为上限，不是系统调用级抢占。
 
 ## 开发验证
 

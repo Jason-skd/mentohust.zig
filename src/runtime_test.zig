@@ -41,3 +41,18 @@ test "runtime rejects invalid and missing interfaces before opening raw Ethernet
     try std.testing.expectError(error.InvalidInterface, runtime.Runtime.init(std.testing.io, &signals, &@as([256]u8, @splat('x')), .{}));
     try std.testing.expectError(error.FactsUnavailable, runtime.Runtime.init(std.testing.io, &signals, "m3-missing0", .{}));
 }
+
+test "facts read rejects an expired deadline before inspecting the interface" {
+    var signals = try runtime.Signals.init();
+    defer signals.deinit();
+    var unavailable: runtime.Runtime = .{
+        .io = std.testing.io,
+        .signals = &signals,
+        .name = @splat(0),
+        .deployment = .{},
+        .initial_facts = .{ .source_mac = @splat(0) },
+        .ethernet = .{ .fd = -1, .source_mac = @splat(0) },
+        .watchdog = .{ .io = std.testing.io },
+    };
+    try std.testing.expectError(error.DeadlineExceeded, unavailable.readFacts(.zero));
+}
